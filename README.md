@@ -30,7 +30,7 @@ It is plain static files; any static server works.
 
 ```sh
 python3 -m http.server 8000     # then open http://localhost:8000
-node --test tests/              # unit tests for timing, Koch progression, storage
+node --test tests/morse.test.js              # unit tests for timing, Koch progression, storage
 ```
 
 - **Laptop**: open the page; type letters to answer, space bar to key in Send mode.
