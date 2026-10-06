@@ -37,7 +37,10 @@ node --test tests/              # unit tests for timing, Koch progression, stora
 - **Android**: open the hosted page in Chrome, then menu → *Install app* / *Add to Home screen*. After the first visit it
   works offline. Audio starts on your first tap (a browser rule). The screen is kept awake during a session where the
   browser allows it.
-- Hosting: any static host over HTTPS (GitHub Pages, Netlify, …) — service workers and install need HTTPS or localhost.
+- Hosting: GitHub Pages via `.github/workflows/pages.yml` (tests, then deploy on every push to the default branch). One-time setup:
+  repo **Settings → Pages → Build and deployment → Source: GitHub Actions**. The site is then at
+  `https://<owner>.github.io/MorseIcode/`. Pages on a private repo needs a paid GitHub plan; otherwise make the repo public.
+  Any other static host over HTTPS also works — service workers and install need HTTPS or localhost.
 
 ## Layout
 
