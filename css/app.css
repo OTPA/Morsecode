@@ -1,0 +1,102 @@
+/* Tokens from the Morse Ear Trainer design system. */
+:root {
+  --surface: #f4efe6; --surface-raised: #fffaf0; --ink: #1c1a17; --ink-muted: #5a544b;
+  --line: #8a8070; --hairline: #d8cfbf; --signal: #9c4a06; --on-signal: #fffaf0;
+  --correct: #0b5e86; --on-correct: #fffaf0; --wrong: #a3202a; --on-wrong: #fffaf0;
+  --font-serif: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-6: 24px; --space-8: 32px; --space-12: 48px;
+  --radius-sm: 6px; --radius-md: 12px; --radius-lg: 20px;
+  --touch-min: 48px; --pad-key: 72px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #14130f; --surface-raised: #1f1d18; --ink: #f1ebde; --ink-muted: #b3ab9b;
+    --line: #7d7566; --hairline: #34302a; --signal: #f0a24a; --on-signal: #14130f;
+    --correct: #5cc0f0; --on-correct: #14130f; --wrong: #ff8a8f; --on-wrong: #14130f;
+  }
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--surface); color: var(--ink);
+  font: 16px/24px var(--font-sans);
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  min-height: 100vh;
+}
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.top { max-width: 640px; margin: 0 auto; padding: var(--space-4) var(--space-4) 0; }
+.top h1 { margin: 0 0 var(--space-3); font: 700 22px/28px var(--font-serif); }
+.tabs { display: flex; gap: var(--space-2); border-bottom: 1px solid var(--hairline); }
+.tabs button {
+  flex: 1; min-height: var(--touch-min); padding: 0 var(--space-2);
+  border: 0; border-bottom: 3px solid transparent; background: none; color: var(--ink-muted);
+  font: 600 15px/20px var(--font-sans); cursor: pointer;
+}
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--signal); }
+
+main { max-width: 640px; margin: 0 auto; padding: var(--space-4); outline: none; }
+.card { background: var(--surface-raised); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: var(--space-6) var(--space-4); }
+.center { text-align: center; }
+h2 { margin: 0 0 var(--space-3); font: 700 28px/34px var(--font-serif); }
+p { margin: 0 0 var(--space-3); }
+.hint { color: var(--ink-muted); }
+.readout { margin: 0 0 var(--space-4); font: 14px/20px var(--font-mono); color: var(--ink-muted); }
+.label { font: 600 12px/16px var(--font-sans); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-muted); }
+
+button { font-family: inherit; }
+button:focus-visible, .key:focus-visible, input:focus-visible { outline: 3px solid var(--signal); outline-offset: 2px; }
+.btn {
+  min-height: var(--touch-min); padding: 0 var(--space-6); border-radius: var(--radius-md);
+  border: 2px solid var(--line); background: var(--surface-raised); color: var(--ink);
+  font: 600 16px/20px var(--font-sans); cursor: pointer;
+}
+.btn.primary { background: var(--signal); border-color: var(--signal); color: var(--on-signal); }
+.row { display: flex; flex-wrap: wrap; gap: var(--space-3); justify-content: center; margin: var(--space-4) 0; }
+
+.pad { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: var(--space-2); margin-top: var(--space-6); }
+.pad button {
+  min-height: var(--pad-key); border: 2px solid var(--line); border-radius: var(--radius-md);
+  background: var(--surface-raised); color: var(--ink); font: 700 28px/1 var(--font-serif); cursor: pointer;
+}
+.pad button:active { background: var(--hairline); }
+
+.big { margin: var(--space-6) 0 var(--space-4); font: 700 120px/120px var(--font-serif); text-align: center; }
+.status { display: inline-block; padding: var(--space-1) var(--space-3); border-radius: var(--radius-md); font-weight: 600; }
+.status.correct { background: var(--correct); color: var(--on-correct); }
+.status.wrong { background: var(--wrong); color: var(--on-wrong); }
+.glyphs { display: grid; gap: var(--space-3); justify-items: center; margin: var(--space-4) 0; }
+.glyphs .label { margin-bottom: var(--space-1); text-align: center; }
+.me-glyph { display: block; margin: 0 auto; color: var(--ink); }
+.me-glyph rect { fill: currentColor; }
+
+.key {
+  display: grid; place-items: center; width: 100%; min-height: 180px; margin-top: var(--space-4);
+  border: 3px solid var(--signal); border-radius: var(--radius-lg); background: var(--surface-raised);
+  color: var(--ink); font: 600 16px/24px var(--font-sans); cursor: pointer;
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent;
+}
+.key.down { background: var(--signal); color: var(--on-signal); }
+
+.ladder { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-3) 0 var(--space-6); }
+.chip {
+  display: grid; place-items: center; width: 40px; height: 40px; border: 2px solid var(--line);
+  border-radius: var(--radius-sm); font: 700 18px/1 var(--font-mono);
+}
+.chip.mastered { background: var(--ink); border-color: var(--ink); color: var(--surface); }
+.chip.current { background: var(--surface-raised); border: 3px solid var(--signal); }
+.chip.locked { border-style: dashed; color: var(--ink-muted); }
+
+.stats { display: grid; grid-template-columns: 1fr auto; gap: var(--space-2) var(--space-4); margin: 0 0 var(--space-6); }
+.stats dt { color: var(--ink-muted); } .stats dd { margin: 0; font: 14px/24px var(--font-mono); text-align: right; }
+
+form.settings { display: grid; gap: var(--space-6); }
+.field { display: grid; gap: var(--space-1); }
+.field output { font: 14px/20px var(--font-mono); color: var(--ink-muted); }
+.field input[type="range"] { width: 100%; min-height: var(--touch-min); accent-color: var(--signal); }
+.field.check { grid-template-columns: auto 1fr; align-items: center; gap: var(--space-3); }
+.field.check input { width: 24px; height: 24px; accent-color: var(--signal); }
+.danger { border-color: var(--wrong); color: var(--wrong); }
