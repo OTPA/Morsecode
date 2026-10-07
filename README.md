@@ -21,6 +21,16 @@ One installable web app (PWA): works on an Android phone and on a laptop, offlin
    big key or the space bar. You hear your own side tone; the app decodes your timing and shows what you sent next to the
    target. Only characters you have unlocked are used. There are no flashing lights anywhere in the app.
 
+3. **Voice** (hands-free): practise without looking at the screen.
+   - *Quiz me by voice*: the app plays a character, you say the letter (or its phonetic word, e.g. "Kilo"), and the app
+     says "Correct" or "Not quite, it was K, Kilo" and replays the sound. Say "repeat", "skip" or "stop" at any time.
+   - *Just listen*: sound, a pause to think, the letter spoken, the sound again. No answers needed.
+   - Spoken verdicts also work in Listen and Send (Settings: "Say Correct or Not quite out loud").
+
+   Limits: voice answers need Chrome (Android or laptop) and an internet connection, because Chrome sends your voice to
+   its speech service. Browsers pause the microphone when the screen turns off or you switch apps, so the session stops
+   (with a message) instead of failing silently. Use hands-free only where it is safe and legal.
+
 Settings: tone pitch, character speed, effective speed, auto speed-up, sending speed, echo mode, volume.
 Progress is saved on the device (localStorage).
 
@@ -30,7 +40,7 @@ It is plain static files; any static server works.
 
 ```sh
 python3 -m http.server 8000     # then open http://localhost:8000
-node --test tests/morse.test.js              # unit tests for timing, Koch progression, storage
+node --test tests/*.test.js              # unit tests: timing, Koch progression, storage, voice answer parsing
 ```
 
 - **Laptop**: open the page; type letters to answer, space bar to key in Send mode.
@@ -50,7 +60,9 @@ css/app.css            design tokens and screens
 js/morse.js            table, Koch order, Farnsworth timing, keying decode (pure)
 js/trainer.js          level, weighted picking, 50-character blocks, storage (pure)
 js/audio.js            Web Audio: scheduled characters, live side tone
+js/voiceparse.js       what you said -> character or command; what to say back (pure)
+js/voice.js            browser speech synthesis and recognition
 js/app.js              screens and input
-tests/morse.test.js
+tests/*.test.js
 icons/
 ```

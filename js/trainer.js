@@ -16,7 +16,8 @@
       weights: { listen: {}, send: {} },
       chars: { listen: {}, send: {} },   // per-character {n, ok}
       recent: { listen: [], send: [] },  // last 50 results per mode
-      settings: { pitch: 650, charWpm: 20, effWpm: 10, auto: true, sendWpm: 10, echo: false, volume: 0.6 }
+      settings: { pitch: 650, charWpm: 20, effWpm: 10, auto: true, sendWpm: 10, echo: false, volume: 0.6,
+        speak: true, phonetic: true, speechRate: 1, thinkSec: 3, voiceMode: 'quiz' }
     };
   }
 
