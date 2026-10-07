@@ -45,9 +45,9 @@ letters, mastery or mix-up records; they only award levels.
 - **1 Foundation**: all 40 characters Learned, at 12 WPM effective or faster.
 - **2 Fluent**: Foundation, and a Words check passed in the last 45 days.
 - **3 Proficient**: Fluent, and a Text check and a Sending check both passed in the last 45 days.
-- **4 Teacher**: lead a short lesson with your children (family profiles come in a later update).
+- **4 Teacher**: Proficient, and your children have practised on at least 10 different days (3 or more minutes each; counted from the family profiles).
 
-The app suggests a check about once a week once ten letters are unlocked.
+The app suggests a check about once a week once ten letters are unlocked. Checks and levels are for adult profiles only.
 
 ## Screens
 
@@ -72,6 +72,29 @@ The app suggests a check about once a week once ten letters are unlocked.
 - **Settings**: tone and speeds, daily goal, **practice conditions**, voice (device voice picker, speed, pitch, volume, accent for recognition),
   **My own voice** (record your own "Correct", "Not quite", letter names, phonetic words), **Voice calibration**
   (teach the app how it mishears you), **Audio tracks**, **Progress backup**.
+
+### Family profiles
+
+The profile chip at the top (shows **Family**, or the learner's name once there are several) opens the family. Your existing
+progress is simply the first learner, untouched. Every learner has their own progress, settings and letter order; recorded
+voices are shared.
+
+| Kind | For | Starting point |
+|---|---|---|
+| **Adult** | learns alone, the full app | as before |
+| **Child who reads letters** | about 6 and up | 15 min/day, 18 WPM characters at 6 effective, Settings and Parent behind a grown-up check, voice answers off |
+| **Early learner** | about 3 to 5, with a grown-up | 5 min/day, "Play" screen only: **My letters**, **Listen together**, **Echo the rhythm**; gentler mastery (last 10 at 90%, 2 days, no timing; blocks of 20); an "All done" screen when the goal is reached |
+
+- **Grown-up check**: a multiplication question guards Settings, Parent and switching to a grown-up profile on a child's
+  profile; it stays open for 10 minutes. It is a speed bump for small hands, not security.
+- **Listen together**: a grown-up plays a letter, the child says it aloud, the grown-up presses Show and Yes / Not yet.
+  Answers count towards mastery but are not timed.
+- **Echo the rhythm**: sound only, no letters: listen to a few long and short sounds (0.3 s unit) and tap them back.
+  Three right in a row make the next pattern one sound longer; a miss never makes it shorter. No flashing visuals.
+- **Parent screen**: each learner's letters, mastery counts, minutes and last day; add, rename or delete learners; choose
+  starting letters (such as family initials); family names that become practice words for everyone; a printable lesson
+  guide (practical suggestions, not research findings); a whole-family backup.
+- Voice answers send speech to the browser's speech service, so they are off for children until a grown-up turns them on.
 
 ### Practice conditions
 
@@ -121,6 +144,8 @@ js/study.js            the study sequences: name, sound, recall (pure)
 js/words.js            word list, ham pack, prosigns, word and group picking, answer comparison (pure)
 js/checks.js           the four weekly checks, scoring, levels, when a check is due (pure)
 js/coach.js            plain coaching notes for the Today screen (pure)
+js/family.js           learner profiles, parent overview, family backup (pure)
+js/rhythm.js           the sound-only rhythm game for the youngest learners (pure)
 js/tracks.js           audio-track planning and offline rendering
 js/audio.js            Web Audio: scheduled characters, words and prosigns with noise and fading; live side tone
 js/voiceparse.js       what you said -> character or command; what to say back (pure)

@@ -158,6 +158,15 @@
     return len + d;
   };
 
+  /** Play a bare dit/dah pattern, clean, at a very slow unit (the rhythm game). Returns its length in seconds. */
+  MorseAudio.prototype.playCode = function (code, delay, unit) {
+    if (!this.unlock()) return 0;
+    var s = Object.assign({}, this.getSettings(), { charWpm: 1.2 / unit, effWpm: 1.2 / unit });
+    var d = delay == null ? 0.1 : delay;
+    var len = MorseAudio.scheduleChar(this.ctx, this.ctx.destination, '', this.ctx.currentTime + d, s, { cond: root.Morse.CONDITIONS.clean, code: code });
+    return len + d;
+  };
+
   /** Side tone while a key is held. */
   MorseAudio.prototype.keyDown = function () {
     if (!this.unlock()) return;

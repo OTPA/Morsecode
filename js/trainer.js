@@ -20,7 +20,11 @@
 
   function defaults() {
     return {
-      level: 2,              // characters unlocked (Koch order); starts with K and M
+      kind: 'adult',         // adult | child (reads letters) | early (pre-reader, plays with a parent)
+      relaxed: false,        // gentler criteria for young learners: no timing, fewer answers, fewer days
+      order: null,           // custom order of the 40 characters (null = the Koch order)
+      rhythm: { played: 0, matched: 0, best: 0 },   // the sound-only rhythm game
+      level: 2,              // characters unlocked (in order); starts with the first two
       introduced: 0,         // how many unlocked characters have been studied (named, then heard)
       block: [],             // last results of the current listening block (true/false)
       weights: { listen: {}, send: {} },
@@ -37,7 +41,7 @@
       settings: { pitch: 650, charWpm: 20, effWpm: 10, auto: true, sendWpm: 10, echo: false, volume: 0.6,
         speak: true, phonetic: true, speechRate: 1, thinkSec: 3, voiceMode: 'learn',
         voiceURI: '', speechPitch: 1, speechVolume: 1, recogLang: 'en-US', ownVoice: false, goalMin: 40,
-        conditions: 'clean', hamPack: false, prosigns: false }
+        conditions: 'clean', hamPack: false, prosigns: false, voiceAnswers: true }
     };
   }
 
@@ -52,23 +56,37 @@
     return base;
   }
 
+  /** A custom order is only used if it is exactly the 40 characters, each once. */
+  function validOrder(o) {
+    if (!Array.isArray(o) || o.length !== Morse.KOCH_ORDER.length) return false;
+    var seen = {};
+    return o.every(function (c) { if (seen[c] || !Morse.TABLE[c]) return false; seen[c] = true; return true; });
+  }
+
+  /** The order characters are unlocked in for this learner. */
+  function order(st) { return validOrder(st.order) ? st.order : Morse.KOCH_ORDER; }
+
+  /** Trials per unlock decision: shorter for young learners, who tire sooner. */
+  function blockSize(st) { return st && st.relaxed ? 20 : BLOCK; }
+
   function normalise(st) {
+    if (!validOrder(st.order)) st.order = null;
     st.level = Math.max(2, Math.min(Number(st.level) || 2, Morse.KOCH_ORDER.length));
     st.introduced = Math.max(0, Math.min(Number(st.introduced) || 0, st.level));
     return st;
   }
 
-  function load(storage) {
+  function load(storage, key) {
     var st = defaults();
     try {
-      var raw = storage && storage.getItem(STORE_KEY);
+      var raw = storage && storage.getItem(key || STORE_KEY);
       if (raw) st = merge(st, JSON.parse(raw));
     } catch (e) { /* unreadable or blocked storage: start fresh */ }
     return normalise(st);
   }
 
-  function save(storage, st) {
-    try { storage && storage.setItem(STORE_KEY, JSON.stringify(st)); } catch (e) { /* ignore */ }
+  function save(storage, st, key) {
+    try { storage && storage.setItem(key || STORE_KEY, JSON.stringify(st)); } catch (e) { /* ignore */ }
   }
 
   /** Whole progress as a file's text, for backup or moving to another device. */
@@ -111,7 +129,7 @@
   }
 
   function unlocked(st) {
-    return Morse.KOCH_ORDER.slice(0, st.level);
+    return order(st).slice(0, st.level);
   }
 
   /* ---------- mastery ---------- */
@@ -127,16 +145,23 @@
   function charStatus(st, ch) {
     var m = st.mastery[ch];
     if (!m || !m.res.length) return { status: 'New', n: 0, acc: null, medianMs: null, timed: 0, days: 0, need: ['first answers'] };
-    var n = m.res.length;
-    var acc = m.res.reduce(function (a, b) { return a + b; }, 0) / n;
+    var relaxed = !!st.relaxed;
+    var win = relaxed ? 10 : WINDOW;
+    var minAcc = relaxed ? 0.9 : LEARNED_ACC;
+    var minDays = relaxed ? 2 : LEARNED_DAYS;
+    var res = m.res.slice(-win);
+    var n = res.length;
+    var acc = res.reduce(function (a, b) { return a + b; }, 0) / n;
     var med = median(m.ms);
     var days = m.days.length;
     var need = [];
-    if (n < WINDOW) need.push((WINDOW - n) + ' more answers');
-    else if (acc < LEARNED_ACC) need.push('accuracy ' + Math.round(LEARNED_ACC * 100) + '% (now ' + Math.round(acc * 100) + '%)');
-    if (m.ms.length < MIN_TIMED) need.push((MIN_TIMED - m.ms.length) + ' timed answers (Listen tab)');
-    else if (med > LEARNED_MS) need.push('faster answers (now ' + (med / 1000).toFixed(1) + ' s)');
-    if (days < LEARNED_DAYS) need.push((LEARNED_DAYS - days) + ' more day' + (LEARNED_DAYS - days === 1 ? '' : 's'));
+    if (n < win) need.push((win - n) + ' more answers');
+    else if (acc < minAcc) need.push('accuracy ' + Math.round(minAcc * 100) + '% (now ' + Math.round(acc * 100) + '%)');
+    if (!relaxed) {                                           // young learners are not timed
+      if (m.ms.length < MIN_TIMED) need.push((MIN_TIMED - m.ms.length) + ' timed answers (Listen tab)');
+      else if (med > LEARNED_MS) need.push('faster answers (now ' + (med / 1000).toFixed(1) + ' s)');
+    }
+    if (days < minDays) need.push((minDays - days) + ' more day' + (minDays - days === 1 ? '' : 's'));
     var last10 = m.res.slice(-10);
     var acc10 = last10.reduce(function (a, b) { return a + b; }, 0) / last10.length;
     var status = 'Learning';
@@ -269,18 +294,18 @@
     }
     if (opts.noBlock) return null;
     st.block.push(ok);
-    if (st.block.length < BLOCK) return null;
+    if (st.block.length < blockSize(st)) return null;
     var acc = accuracy(st.block);
     st.block = [];
     var s = st.settings;
     if (acc >= PASS) {
       if (st.level < Morse.KOCH_ORDER.length) {
         st.level++;
-        st.weights.listen[Morse.KOCH_ORDER[st.level - 1]] = 3;
+        st.weights.listen[order(st)[st.level - 1]] = 3;
       }
       if (s.auto && s.effWpm < s.charWpm) s.effWpm = Math.min(s.charWpm, s.effWpm + 1);
       st.levelDate = opts.date || today();
-      return { event: 'advance', accuracy: acc, newChar: Morse.KOCH_ORDER[st.level - 1] };
+      return { event: 'advance', accuracy: acc, newChar: order(st)[st.level - 1] };
     }
     if (acc < FALL_BACK && st.level > 2) {
       st.level--;
@@ -331,7 +356,7 @@
     return total;
   }
 
-  return { BLOCK: BLOCK, PASS: PASS, FALL_BACK: FALL_BACK, STORE_KEY: STORE_KEY, WINDOW: WINDOW, LEARNED_ACC: LEARNED_ACC,
+  return { BLOCK: BLOCK, blockSize: blockSize, order: order, validOrder: validOrder, PASS: PASS, FALL_BACK: FALL_BACK, STORE_KEY: STORE_KEY, WINDOW: WINDOW, LEARNED_ACC: LEARNED_ACC,
     LEARNED_MS: LEARNED_MS, LEARNED_DAYS: LEARNED_DAYS, SOLID_AFTER_DAYS: SOLID_AFTER_DAYS, REVIEW_SHARE: REVIEW_SHARE,
     defaults: defaults, load: load, save: save, exportJson: exportJson, importJson: importJson,
     unlocked: unlocked, pick: pick, record: record, recordWord: recordWord, accuracy: accuracy,

@@ -1,12 +1,16 @@
 (function () {
-  var M = window.Morse, T = window.Trainer;
+  var M = window.Morse, T = window.Trainer, FA = window.Family, RH = window.Rhythm;
 
   function storage() { try { return window.localStorage; } catch (e) { return null; } }
-  var st = T.load(storage());
+  var fam = FA.load(storage());
+  function profile() { return FA.active(fam); }
+  var st = T.load(storage(), profile().key);
+  function kind() { return st.kind || profile().kind; }
+  function isKid() { return kind() !== 'adult'; }
   var audio = new window.MorseAudio(function () { return ui.override || st.settings; });
 
-  var ui = {
-    tab: 'today',
+  function freshUi() { return {
+    tab: st.kind === 'early' ? 'play' : 'today',
     lastPractice: null,
     session: null,
     listen: { phase: 'idle', last: null, focus: null, skipStudy: false, endAt: 0 },
@@ -19,8 +23,17 @@
     cal: null,
     check: null,
     checkResult: null,
-    override: null
-  };
+    override: null,
+    gate: null,
+    gateUntil: 0,
+    famView: 'main',
+    famId: null,
+    famMsg: '',
+    playMore: false,
+    together: { phase: 'idle', ch: null, last: null, msg: '' },
+    rhythm: { phase: 'idle', pattern: '', presses: [], down: 0, len: 2, streak: 0, last: null, ok: false, endTimer: null }
+  }; }
+  var ui = freshUi();
   var VP = window.VoiceParse, V = window.Voice, C = window.Clips;
   var STU = window.Study, WD = window.Words, TR = window.Tracks, CK = window.Checks, CO = window.Coach;
   function wordOpts() { return { ham: st.settings.hamPack, prosigns: st.settings.prosigns }; }
@@ -28,7 +41,7 @@
   var view = document.getElementById('view');
   var live = document.getElementById('live');
 
-  function save() { T.save(storage(), st); }
+  function save() { T.save(storage(), st, profile().key); }
   function later(fn, ms) { timers.push(setTimeout(fn, ms)); }
   function clearTimers() { timers.forEach(clearTimeout); timers = []; }
   function say(text) { live.textContent = ''; setTimeout(function () { live.textContent = text; }, 30); }
@@ -131,7 +144,8 @@
   /* ---------- tabs ---------- */
   // Five main tabs; "Practice" opens one of four modes, picked from a second row.
   var GROUP = { today: 'today', learn: 'practice', listen: 'practice', words: 'practice', send: 'practice',
-    voice: 'voice', progress: 'progress', settings: 'settings' };
+    voice: 'voice', progress: 'progress', settings: 'settings', together: 'practice', play: 'play', rhythm: 'play',
+    family: 'family', gate: 'family', who: '' };
   var tabs = Array.prototype.slice.call(document.querySelectorAll('.tabs button'));
   var subtabs = document.getElementById('subtabs');
   var sessionbar = document.getElementById('sessionbar');
@@ -143,7 +157,7 @@
     });
   });
 
-  function go(tab) {
+  function stopAll() {
     abortCheck();
     clearTimers();
     releaseKey();
@@ -153,27 +167,52 @@
     if (ui.rec && ui.rec.session) ui.rec.session.stop();
     cancelSpeech();
     clearTimeout(ui.send.endTimer);
+    clearTimeout(ui.rhythm.endTimer);
+  }
+
+  function go(tab) {
+    stopAll();
     ui.settingsView = 'main';
+    if ((tab === 'settings' || tab === 'family') && !gateOpen()) return openGate(function () { go(tab); });
+    if (tab === 'family') { ui.famView = 'main'; }
     ui.tab = tab;
+    ui.gate = null;
     if (GROUP[tab] === 'practice') ui.lastPractice = tab;
     // a half-finished trial restarts cleanly when you come back
     if (ui.listen.phase !== 'idle') ui.listen.phase = 'idle';
     if (ui.send.phase !== 'idle') ui.send.phase = 'idle';
     if (ui.words.phase !== 'idle') ui.words.phase = 'idle';
+    if (ui.together.phase !== 'idle') ui.together.phase = 'idle';
+    if (ui.rhythm.phase !== 'idle') ui.rhythm.phase = 'idle';
     render();
   }
 
+  var who = document.getElementById('who');
+  who.addEventListener('click', function () { go(fam.profiles.length > 1 ? 'who' : 'family'); });
+  var NAV = { adult: ['today', 'practice', 'voice', 'progress', 'settings'], child: ['today', 'practice', 'voice', 'progress', 'family'], early: ['play', 'family'] };
+
   function render() {
+    var show = NAV[kind()] || NAV.adult;
+    who.textContent = fam.profiles.length > 1 ? profile().name : 'Family';
     tabs.forEach(function (b) {
       var t = b.getAttribute('data-tab');
       var inSub = subtabs.contains(b);
+      if (!inSub) b.hidden = show.indexOf(t) < 0;
       b.setAttribute('aria-selected', String(inSub ? t === ui.tab : t === GROUP[ui.tab]));
     });
-    subtabs.hidden = GROUP[ui.tab] !== 'practice';
+    subtabs.hidden = GROUP[ui.tab] !== 'practice' || kind() === 'early';
     renderSessionBar();
     if (ui.check && ui.check.state === 'intro') return renderCheckIntro();
     ({ today: renderToday, learn: renderLearn, listen: renderListen, words: renderWords, send: renderSend, voice: renderVoice,
-      progress: renderProgress, settings: renderSettings })[ui.tab]();
+      progress: renderProgress, settings: renderSettings, together: renderTogether, rhythm: renderRhythm, play: renderPlay,
+      family: renderFamily, gate: renderGate, who: renderWho })[ui.tab]();
+    if (kind() === 'early' && { learn: 1, together: 1, rhythm: 1 }[ui.tab]) {
+      var back = document.createElement('div');
+      back.className = 'row noprint';
+      back.innerHTML = '<button class="btn" id="backplay">Back to Play</button>';
+      view.appendChild(back);
+      document.getElementById('backplay').addEventListener('click', function () { go('play'); });
+    }
   }
 
   /* ---------- today: the daily plan ---------- */
@@ -188,7 +227,7 @@
     var goal = st.settings.goalMin;
     var p = STU.plan(st);
     var haveLearned = learnedLetters().length > 0;
-    var wordsOk = WD.matching(T.unlocked(st), st.customWords, wordOpts()).length >= WD.MIN_WORDS;
+    var wordsOk = WD.matching(T.unlocked(st), customList(), wordOpts()).length >= WD.MIN_WORDS;
     var mins = {};
     BLOCKS.forEach(function (b) { mins[b[0]] = Math.max(1, Math.round(goal * b[1])); });
     var info = {
@@ -218,7 +257,7 @@
     var goal = st.settings.goalMin, mins = T.minutesOn(st), week = T.minutesLastDays(st, 7);
     var counts = T.countByStatus(st);
     var plan = buildPlan();
-    var notes = CO.notes(st, T.today()).map(function (n) {
+    var notes = CO.notes(st, T.today(), { checks: !isKid() }).map(function (n) {
       return '<li>' + n.text + (n.action ? ' <button class="btn small" data-act="' + n.action + '">' + (n.action === 'learn' ? 'Study' : 'Open Progress') + '</button>' : '') + '</li>';
     }).join('');
     var items = plan.map(function (b, i) {
@@ -294,7 +333,8 @@
     if (document.visibilityState !== 'visible') return;
     var active = (ui.tab === 'listen' && ui.listen.phase !== 'idle') || (ui.tab === 'send' && ui.send.phase !== 'idle') ||
       (ui.tab === 'learn' && ui.learn.running) || (ui.tab === 'words' && ui.words.phase !== 'idle') ||
-      (ui.tab === 'voice' && ui.voice.running);
+      (ui.tab === 'voice' && ui.voice.running) || (ui.tab === 'together' && ui.together.phase !== 'idle') ||
+      (ui.tab === 'rhythm' && ui.rhythm.phase !== 'idle');
     if (active) {
       T.logSeconds(st, 1);
       if (++tickCount % 15 === 0) save();
@@ -318,7 +358,7 @@
     if (L.phase === 'idle') {
       view.innerHTML = '<section class="card center"><h2>Listen</h2>' +
         '<p>This is the quiz. You hear one character at a time and say which one it was. There is nothing to look at: just listen.</p>' +
-        (unstudied ? '<p class="notice" role="alert">You have letters you have not studied yet: ' + M.KOCH_ORDER.slice(st.introduced, st.level).join(' and ') +
+        (unstudied ? '<p class="notice" role="alert">You have letters you have not studied yet: ' + T.order(st).slice(st.introduced, st.level).join(' and ') +
           '. Study them first, so you know which sound belongs to which letter before you are tested.</p>' +
           '<div class="row"><button class="btn primary" id="gostudy">Study them now</button><button class="btn" id="skipstudy">Quiz me anyway</button></div>' : '') +
         (L.focus ? '<p class="hint">' + FOCUS_LABEL[L.focus] + '</p>' : '') +
@@ -372,7 +412,7 @@
   function afterIntro() {
     clearTimers();
     if (st.introduced < st.level && !ui.listen.skipStudy) {
-      ui.learn.message = 'A new letter is ready: ' + M.KOCH_ORDER.slice(st.introduced, st.level).join(' and ') +
+      ui.learn.message = 'A new letter is ready: ' + T.order(st).slice(st.introduced, st.level).join(' and ') +
         '. Study it first, then come back to the quiz.';
       go('learn');
       return;
@@ -510,6 +550,7 @@
 
   function releaseKey() {
     if (ui.send.down) { ui.send.down = 0; audio.keyUp(); }
+    if (ui.rhythm.down) { ui.rhythm.down = 0; audio.keyUp(); }
   }
 
   function finishSend() {
@@ -554,7 +595,7 @@
   /** Mark the letters of a finished study session as studied, so the quiz may include them. */
   function markStudied(plan) {
     if (!plan.fresh) return;
-    var last = M.KOCH_ORDER.indexOf(plan.target[plan.target.length - 1]) + 1;
+    var last = T.order(st).indexOf(plan.target[plan.target.length - 1]) + 1;
     if (last > st.introduced) { st.introduced = Math.min(last, st.level); save(); }
   }
 
@@ -587,9 +628,9 @@
     if (Ln.done) {
       view.innerHTML = '<section class="card center"><h2>Studied</h2>' +
         '<p>You have met ' + Ln.done.join(' and ') + '. Nothing was marked. When you can think of the letter <em>before</em> its name is spoken, you are ready to be quizzed.</p>' +
-        '<div class="row"><button class="btn" id="again">Study again</button><button class="btn primary" id="toquiz">Go to the quiz</button></div></section>';
+        '<div class="row"><button class="btn" id="again">Study again</button><button class="btn primary" id="toquiz">' + (kind() === 'early' ? 'Listen together' : 'Go to the quiz') + '</button></div></section>';
       document.getElementById('again').addEventListener('click', function () { Ln.done = null; startStudyScreen(); });
-      document.getElementById('toquiz').addEventListener('click', function () { Ln.done = null; go('listen'); });
+      document.getElementById('toquiz').addEventListener('click', function () { Ln.done = null; go(kind() === 'early' ? 'together' : 'listen'); });
       return;
     }
     var p = STU.plan(st);
@@ -636,7 +677,7 @@
   /* ---------- words (head copy) ---------- */
   function renderWords() {
     var Wd = ui.words, allowed = T.unlocked(st);
-    var n = WD.matching(allowed, st.customWords, wordOpts()).length;
+    var n = WD.matching(allowed, customList(), wordOpts()).length;
     if (Wd.phase === 'idle') {
       var custom = st.customWords.map(function (w, i) {
         return '<span class="chip" style="width:auto;padding:0 8px">' + w + ' <button type="button" class="x" data-rm="' + i + '" aria-label="Remove ' + w + '">×</button></span>';
@@ -701,7 +742,7 @@
     clearTimers();
     var Wd = ui.words;
     if (checkRunning(['words', 'text'])) Wd.item = { text: ui.check.items[ui.check.i].text, kind: ui.check.kind === 'text' ? 'text' : 'word' };
-    else Wd.item = WD.next(T.unlocked(st), Math.random, Wd.last, st.customWords, wordOpts());
+    else Wd.item = WD.next(T.unlocked(st), Math.random, Wd.last, customList(), wordOpts());
     Wd.last = Wd.item.text;
     Wd.phase = 'prompt';
     render();
@@ -740,9 +781,10 @@
 
   /* ---------- voice (hands-free) ---------- */
   var voiceToken = null;
+  function recogOk() { return V.canListen && st.settings.voiceAnswers !== false; }
 
   function renderVoice() {
-    var vs = ui.voice, canListen = V.canListen, mode = st.settings.voiceMode;
+    var vs = ui.voice, canListen = recogOk(), mode = st.settings.voiceMode;
     if (!canListen && mode === 'quiz') mode = 'learn';
     if (!vs.running) {
       view.innerHTML = '<section class="card center"><h2>Voice</h2>' +
@@ -755,7 +797,8 @@
         '<label><input type="radio" name="vmode" value="quiz"' + (mode === 'quiz' ? ' checked' : '') + (canListen ? '' : ' disabled') +
         '><span><strong>Quiz me by voice</strong><br>Say the letter, or its phonetic word such as “Kilo”. The app says whether you were right. Say “repeat”, “skip” or “stop” at any time.</span></label></div>' +
         (vs.message ? '<p class="notice" role="alert">' + vs.message + '</p>' : '') +
-        (canListen ? '' : '<p class="notice">Voice answers need speech recognition, which this browser does not have. Chrome on Android or on a laptop has it. Learning and listening work here.</p>') +
+        (canListen ? '' : V.canListen ? '<p class="notice">Answering by voice is off for this learner. A grown-up can turn it on in Settings. Learning and listening work as they are.</p>'
+          : '<p class="notice">Voice answers need speech recognition, which this browser does not have. Chrome on Android or on a laptop has it. Learning and listening work here.</p>') +
         (V.canSpeak ? '' : '<p class="notice">This browser cannot speak. Voice practice needs speech output.</p>') +
         '<button class="btn primary big-btn" id="vstart"' + (V.canSpeak ? '' : ' disabled') + '>Start</button>' +
         '<div class="row"><button class="btn" id="vsettings">Voice settings</button></div>' +
@@ -833,7 +876,7 @@
     audio.unlock();
     keepAwake();
     var mode = st.settings.voiceMode;
-    if (!V.canListen && mode === 'quiz') mode = 'learn';
+    if (!recogOk() && mode === 'quiz') mode = 'learn';
     ui.voice = { running: true, mode: mode, last: null, message: '', stoppedByVoice: false };
     var token = voiceToken = { stop: false, waiters: [] };
     render();
@@ -964,6 +1007,422 @@
     if (ui.voice.stoppedByVoice) await talk('Stopped.');
   }
 
+  /* ---------- who is learning: gate, switching, family screens ---------- */
+  function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function home() { return kind() === 'early' ? 'play' : 'today'; }
+  function gateOpen() { return !isKid() || ui.gateUntil > Date.now(); }
+
+  /** Words to practise: the learner's own plus the family names a grown-up entered. */
+  function customList() {
+    var seen = {}, out = [];
+    var names = [];
+    fam.family.names.forEach(function (n) { String(n).split(/\s+/).forEach(function (w) { names.push(w); }); });
+    st.customWords.concat(names).forEach(function (w) {
+      w = WD.clean(w);
+      if (w && /^[A-Z0-9]{2,12}$/.test(w) && !seen[w]) { seen[w] = 1; out.push(w); }
+    });
+    return out;
+  }
+
+  function openGate(then) {
+    ui.gate = { a: 12 + Math.floor(Math.random() * 8), b: 6 + Math.floor(Math.random() * 4), then: then, wrong: false };
+    ui.tab = 'gate';
+    render();
+  }
+
+  function renderGate() {
+    var g = ui.gate;
+    view.innerHTML = '<section class="card center gatebox"><h2>Grown-ups only</h2><p>To open this part, answer: what is <strong>' + g.a + ' × ' + g.b + '</strong>?</p>' +
+      (g.wrong ? '<p class="notice" role="alert">Not quite. Here is a new one.</p>' : '') +
+      '<form id="gform" class="row"><input id="gans" type="text" inputmode="numeric" autocomplete="off" aria-label="Your answer"><button class="btn primary" type="submit">Open</button></form>' +
+      '<div class="row"><button class="btn" id="gback" type="button">Back</button></div></section>';
+    document.getElementById('gans').focus();
+    document.getElementById('gform').addEventListener('submit', function (e) {
+      e.preventDefault();
+      if (Number(document.getElementById('gans').value.trim()) === g.a * g.b) {
+        ui.gateUntil = Date.now() + 10 * 60000;
+        ui.gate = null;
+        g.then();
+      } else {
+        ui.gate = { a: 12 + Math.floor(Math.random() * 8), b: 6 + Math.floor(Math.random() * 4), then: g.then, wrong: true };
+        renderGate();
+      }
+    });
+    document.getElementById('gback').addEventListener('click', function () { ui.gate = null; go(home()); });
+  }
+
+  /** Load the active learner's progress and start their screens from scratch. */
+  function loadActive() {
+    st = T.load(storage(), profile().key);
+    var f = freshUi();
+    Object.keys(f).forEach(function (k) { ui[k] = f[k]; });
+  }
+
+  function switchProfile(id) {
+    stopAll();
+    save();
+    FA.setActive(fam, id);
+    FA.save(storage(), fam);
+    loadActive();
+    render();
+  }
+
+  /** Switching from a child to a grown-up's profile needs the grown-up check. */
+  function chooseProfile(id) {
+    var target = FA.find(fam, id);
+    if (!target || id === profile().id) return go(home());
+    if (isKid() && target.kind === 'adult' && !gateOpen()) return openGate(function () { switchProfile(id); });
+    switchProfile(id);
+  }
+
+  function renderWho() {
+    var buttons = fam.profiles.map(function (p) {
+      return '<button type="button" class="bigcard" data-who="' + p.id + '">' + esc(p.name) + '<small>' + FA.KINDS[p.kind].label + (p.id === profile().id ? ' · learning now' : '') + '</small></button>';
+    }).join('');
+    view.innerHTML = '<section class="card center"><h2>Who is learning?</h2><div class="cards">' + buttons + '</div>' +
+      '<div class="row"><button class="btn" id="whofam">Family (grown-ups)</button></div></section>';
+    Array.prototype.forEach.call(view.querySelectorAll('[data-who]'), function (b) {
+      b.addEventListener('click', function () { chooseProfile(b.getAttribute('data-who')); });
+    });
+    document.getElementById('whofam').addEventListener('click', function () { go('family'); });
+  }
+
+  function famMessage() {
+    var m = ui.famMsg;
+    ui.famMsg = '';
+    return m ? '<p class="notice" role="status">' + esc(m) + '</p>' : '';
+  }
+
+  function downloadText(name, text) {
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    a.download = name;
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+  }
+
+  function renderFamily() {
+    if (ui.famView === 'add') return renderFamAdd();
+    if (ui.famView === 'edit') return renderFamEdit();
+    if (ui.famView === 'guide') return renderGuide();
+    var rows = FA.summary(fam, storage(), T.today()).map(function (r) {
+      var p = r.profile;
+      return '<li class="famrow"><div><strong>' + esc(p.name) + '</strong> <span class="hint">· ' + FA.KINDS[p.kind].label + (p.id === profile().id ? ' · learning now' : '') + '</span></div>' +
+        '<div class="hint">Letters: ' + r.letters + '<br>Solid ' + r.counts.Solid + ' · Learned ' + r.counts.Learned + ' · Learning ' + r.counts.Learning +
+        '<br>Today ' + Math.floor(r.minToday) + ' min · last 7 days ' + Math.round(r.min7) + ' min · ' + (r.last ? 'last practised ' + ago(r.last) : 'not practised yet') + '</div>' +
+        '<div class="row"><button class="btn small" data-open="' + p.id + '">Learn as ' + esc(p.name) + '</button><button class="btn small" data-edit="' + p.id + '">Edit</button></div></li>';
+    }).join('');
+    var td = FA.teachingDays(fam, storage());
+    view.innerHTML = '<section class="card"><h2>Family</h2>' + famMessage() +
+      '<p>Everyone has their own progress, settings and letters. Recorded voices are shared.</p><ul class="fam">' + rows + '</ul>' +
+      '<div class="row"><button class="btn primary" id="famadd"' + (fam.profiles.length >= FA.MAX_PROFILES ? ' disabled' : '') + '>Add a learner</button></div>' +
+      '<p class="readout">Teacher level: children have practised on ' + td + ' of ' + FA.TEACH_DAYS + ' days (' + FA.TEACH_MINUTES + '+ minutes each day).</p></section>' +
+
+      '<section class="card"><h2>Family names</h2><p>Names of people in the family, separated by commas. They become practice words, for every learner, once their letters are unlocked.</p>' +
+      '<form id="famnames" class="row"><input id="famnamesin" type="text" autocomplete="off" aria-label="Family names" value="' + esc(fam.family.names.join(', ')) + '"><button class="btn" type="submit">Save</button></form></section>' +
+
+      '<section class="card"><h2>For grown-ups</h2><div class="row">' +
+      '<button class="btn" id="famset">Settings for ' + esc(profile().name) + '</button>' +
+      '<button class="btn" id="famguide">Lesson guide</button></div>' +
+      '<p class="label">Family backup</p><p class="hint">Saves every learner’s progress in one file. Restoring replaces everything on this device.</p>' +
+      '<div class="row"><button class="btn" id="famsave">Save a family backup</button><button class="btn" id="famrestore">Restore a family backup</button></div>' +
+      '<input type="file" id="famfile" accept="application/json,.json" class="sr"><p class="hint" id="fammsg" role="status"></p></section>';
+    Array.prototype.forEach.call(view.querySelectorAll('[data-open]'), function (b) {
+      b.addEventListener('click', function () { chooseProfile(b.getAttribute('data-open')); });
+    });
+    Array.prototype.forEach.call(view.querySelectorAll('[data-edit]'), function (b) {
+      b.addEventListener('click', function () { ui.famId = b.getAttribute('data-edit'); ui.famView = 'edit'; render(); });
+    });
+    document.getElementById('famadd').addEventListener('click', function () { ui.famView = 'add'; render(); });
+    document.getElementById('famnames').addEventListener('submit', function (e) {
+      e.preventDefault();
+      FA.setFamilyNames(fam, document.getElementById('famnamesin').value.split(','));
+      FA.save(storage(), fam);
+      ui.famMsg = 'Family names saved.';
+      render();
+    });
+    document.getElementById('famset').addEventListener('click', function () { go('settings'); });
+    document.getElementById('famguide').addEventListener('click', function () { ui.famView = 'guide'; render(); });
+    var msg = document.getElementById('fammsg');
+    document.getElementById('famsave').addEventListener('click', function () {
+      save();
+      downloadText('morse-ear-trainer-family-' + T.today() + '.json', FA.exportAll(fam, storage()));
+      msg.textContent = 'Backup saved to your downloads.';
+    });
+    document.getElementById('famrestore').addEventListener('click', function () { document.getElementById('famfile').click(); });
+    document.getElementById('famfile').addEventListener('change', function (e) {
+      var f = e.target.files[0];
+      if (!f) return;
+      f.text().then(function (text) {
+        var parsed = FA.parseBackup(text);
+        if (!window.confirm('Replace everyone’s progress on this device with this backup?')) return;
+        fam = FA.applyBackup(storage(), parsed, fam);
+        loadActive();
+        ui.famMsg = 'Restored ' + fam.profiles.length + ' learner' + (fam.profiles.length === 1 ? '' : 's') + '.';
+        ui.tab = 'family';
+        render();
+      }).catch(function (err) { msg.textContent = err.message || 'Could not restore that file.'; });
+    });
+  }
+
+  function renderFamAdd() {
+    var kinds = Object.keys(FA.KINDS).map(function (k, i) {
+      return '<label><input type="radio" name="fkind" value="' + k + '"' + (i === 1 ? ' checked' : '') + '><span><strong>' + FA.KINDS[k].label + '</strong><br>' + FA.KINDS[k].blurb + '</span></label>';
+    }).join('');
+    view.innerHTML = '<section class="card"><h2>Add a learner</h2><form id="addform" class="settings">' +
+      '<div class="field"><label for="fname">Name</label><input id="fname" type="text" maxlength="24" autocomplete="off"></div>' +
+      '<div class="choice" role="radiogroup" aria-label="Kind of learner">' + kinds + '</div>' +
+      '<div class="field"><label for="fstart">Letters to learn first (optional)</label><input id="fstart" type="text" maxlength="12" autocomplete="off" autocapitalize="characters" spellcheck="false" value="' + esc(FA.initialsOf(fam.family.names)) + '">' +
+      '<output>Such as the initials of family names. The rest follow in the usual order.</output></div>' +
+      '<p class="notice" id="adderr" role="alert" hidden></p>' +
+      '<div class="row"><button class="btn primary" type="submit">Add</button><button class="btn" type="button" id="addcancel">Cancel</button></div></form></section>';
+    document.getElementById('addcancel').addEventListener('click', function () { ui.famView = 'main'; render(); });
+    document.getElementById('addform').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var kindVal = view.querySelector('input[name=fkind]:checked').value;
+      try {
+        var p = FA.add(fam, document.getElementById('fname').value, kindVal);
+        T.save(storage(), FA.newState(kindVal, { starters: document.getElementById('fstart').value }), p.key);
+        FA.save(storage(), fam);
+        ui.famMsg = 'Added ' + p.name + '. Use “Learn as ' + p.name + '” to start.';
+        ui.famView = 'main';
+        render();
+      } catch (err) {
+        var box = document.getElementById('adderr');
+        box.textContent = err.message;
+        box.hidden = false;
+      }
+    });
+  }
+
+  function renderFamEdit() {
+    var p = FA.find(fam, ui.famId);
+    if (!p) { ui.famView = 'main'; return renderFamily(); }
+    view.innerHTML = '<section class="card"><h2>Edit ' + esc(p.name) + '</h2><form id="editform" class="settings">' +
+      '<div class="field"><label for="ename">Name</label><input id="ename" type="text" maxlength="24" autocomplete="off" value="' + esc(p.name) + '"></div>' +
+      '<p class="hint">' + FA.KINDS[p.kind].label + '. The kind cannot be changed; add a new learner instead.</p>' +
+      '<p class="notice" id="editerr" role="alert" hidden></p>' +
+      '<div class="row"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" id="editback">Back</button>' +
+      '<button class="btn danger" type="button" id="editdel"' + (fam.profiles.length <= 1 ? ' disabled' : '') + '>Delete this learner</button></div></form></section>';
+    document.getElementById('editback').addEventListener('click', function () { ui.famView = 'main'; render(); });
+    document.getElementById('editform').addEventListener('submit', function (e) {
+      e.preventDefault();
+      try {
+        FA.rename(fam, p.id, document.getElementById('ename').value);
+        FA.save(storage(), fam);
+        ui.famView = 'main';
+        render();
+      } catch (err) {
+        var box = document.getElementById('editerr');
+        box.textContent = err.message;
+        box.hidden = false;
+      }
+    });
+    document.getElementById('editdel').addEventListener('click', function () {
+      if (!window.confirm('Delete ' + p.name + ' and all of their progress? This cannot be undone.')) return;
+      var wasActive = p.id === profile().id;
+      FA.remove(fam, p.id, storage());
+      FA.save(storage(), fam);
+      if (wasActive) loadActive();
+      ui.tab = 'family';
+      ui.famView = 'main';
+      ui.famMsg = 'Deleted ' + p.name + '.';
+      render();
+    });
+  }
+
+  function renderGuide() {
+    view.innerHTML = '<section class="card guide"><h2>Teaching Morse to children</h2>' +
+      '<p class="hint">Practical suggestions for a grown-up, not research findings. You know your children best: adjust freely.</p>' +
+      '<h3>The idea</h3><p>The same method you use: learn each letter as one sound, with its name, never by counting dits and dahs. Children pick up sounds and songs easily, so lean on play.</p>' +
+      '<h3>Ages 3 to 5 (Early learner)</h3><ul class="needs"><li>Sit together. Sessions of about five minutes, once or twice a day, stop while it is still fun.</li>' +
+      '<li>Start with two or three letters, such as the first letters of their names. The app can start with your chosen letters.</li>' +
+      '<li>“My letters”: they hear the name, then the sound. Say the name along with it.</li>' +
+      '<li>“Echo the rhythm”: long and short sounds to tap back, no letters. It trains the ear for timing and can be played before they know any letter.</li>' +
+      '<li>“Listen together”: you press play, they say which letter they think it is (a guess is fine), you press Show and tell the app if they were right.</li>' +
+      '<li>Praise the trying. Do not push past tiredness; a missed day costs very little.</li></ul>' +
+      '<h3>Ages 6 and up (Child who reads letters)</h3><ul class="needs"><li>About 15 minutes a day is a sensible start; shorter is fine.</li>' +
+      '<li>Use Learn first, then Listen. Let them choose the order of the blocks in Today.</li>' +
+      '<li>Add their own names as practice words, so the first words they copy mean something.</li>' +
+      '<li>Take turns: you play a letter, they answer, then swap. Sending with the key is often the favourite part.</li></ul>' +
+      '<h3>Becoming a teacher</h3><p>Level 4, “Teacher”, needs Proficient plus children practising on ' + FA.TEACH_DAYS + ' different days. The Parent screen counts those days. A short lesson of five to ten minutes, a few times a week, is plenty.</p>' +
+      '<h3>Looking after their data</h3><p>Everything stays on this device. Voice answers are off for children until a grown-up turns them on in Settings, because the browser sends spoken answers to its speech service.</p>' +
+      '<div class="row noprint"><button class="btn primary" id="guideprint">Print or save as PDF</button><button class="btn" id="guideback">Back</button></div></section>';
+    document.getElementById('guideprint').addEventListener('click', function () { window.print(); });
+    document.getElementById('guideback').addEventListener('click', function () { ui.famView = 'main'; render(); });
+  }
+
+  /* ---------- early learners: play screen ---------- */
+  function renderPlay() {
+    var mins = T.minutesOn(st), goal = st.settings.goalMin;
+    if (mins >= goal && !ui.playMore) {
+      view.innerHTML = '<section class="card center"><h2>All done for today!</h2><p>That was a good bit of listening. Time for something else. See you tomorrow!</p>' +
+        '<div class="row noprint"><button class="btn" id="playmore">A grown-up can keep going</button></div></section>';
+      document.getElementById('playmore').addEventListener('click', function () { openGate(function () { ui.playMore = true; go('play'); }); });
+      return;
+    }
+    view.innerHTML = '<section class="card center"><h2>Let’s play</h2><div class="cards">' +
+      '<button type="button" class="bigcard" data-go="learn">My letters<small>' + T.unlocked(st).join(' ') + '</small></button>' +
+      '<button type="button" class="bigcard" data-go="together">Listen together<small>A grown-up joins in</small></button>' +
+      '<button type="button" class="bigcard" data-go="rhythm">Echo the rhythm<small>Listen, then tap it back</small></button></div></section>';
+    Array.prototype.forEach.call(view.querySelectorAll('[data-go]'), function (b) {
+      b.addEventListener('click', function () { audio.unlock(); go(b.getAttribute('data-go')); });
+    });
+  }
+
+  /* ---------- together: a grown-up assists the quiz ---------- */
+  function renderTogether() {
+    var Tg = ui.together;
+    var unstudied = st.introduced < st.level;
+    if (Tg.phase === 'idle') {
+      view.innerHTML = '<section class="card center"><h2>Listen together</h2>' +
+        '<p>For a grown-up and a learner, side by side. A letter plays, the learner says which letter they think it is (a guess is fine), then you press <strong>Show</strong> and tell the app whether they were right. Nobody has to type.</p>' +
+        (unstudied ? '<p class="notice" role="alert">There are letters not studied yet: ' + T.order(st).slice(st.introduced, st.level).join(' and ') + '. Study them first.</p>' +
+          '<div class="row"><button class="btn primary" id="tgstudy">Study them now</button></div>' : '<button class="btn primary big-btn" id="tgstart">Start</button>') +
+        '<p class="hint">Answers here are not timed.</p></section>';
+      var s = document.getElementById('tgstart');
+      if (s) s.addEventListener('click', startTogether);
+      var b = document.getElementById('tgstudy');
+      if (b) b.addEventListener('click', function () { go('learn'); startStudyScreen(); });
+    } else if (Tg.phase === 'prompt') {
+      view.innerHTML = '<section class="card center">' + (Tg.msg ? '<p class="notice" role="status">' + esc(Tg.msg) + '</p>' : '') +
+        '<h2>Which letter?</h2><p>Let ' + esc(profile().name) + ' say their answer, then press Show.</p>' +
+        '<div class="row"><button class="btn" id="tgreplay">Play again</button></div>' +
+        '<button class="btn primary big-btn" id="tgshow">Show</button></section>';
+      document.getElementById('tgreplay').addEventListener('click', function () { audio.playChar(Tg.ch); });
+      document.getElementById('tgshow').addEventListener('click', function () { Tg.phase = 'reveal'; Tg.msg = ''; render(); });
+    } else {
+      view.innerHTML = '<section class="card center"><div class="big">' + Tg.ch + '</div><div class="glyphs">' + glyph(M.TABLE[Tg.ch], 16) + '</div>' +
+        '<p>Was the answer right?</p><div class="row"><button class="btn" id="tgagain">Hear it again</button></div>' +
+        '<div class="row"><button class="btn primary" id="tgyes">Yes</button><button class="btn" id="tgno">Not yet</button></div></section>';
+      document.getElementById('tgagain').addEventListener('click', function () { audio.playChar(Tg.ch); });
+      document.getElementById('tgyes').addEventListener('click', function () { rateTogether(true); });
+      document.getElementById('tgno').addEventListener('click', function () { rateTogether(false); });
+    }
+  }
+
+  function startTogether() { audio.unlock(); keepAwake(); nextTogether(); }
+
+  function nextTogether() {
+    clearTimers();
+    var Tg = ui.together;
+    if (st.introduced < st.level) {
+      ui.learn.message = 'A new letter is ready: ' + T.order(st).slice(st.introduced, st.level).join(' and ') + '. Study it first, then come back.';
+      go('learn');
+      return;
+    }
+    Tg.ch = T.pick(st, 'listen', Math.random, Tg.last, {});
+    Tg.last = Tg.ch;
+    Tg.phase = 'prompt';
+    render();
+    later(function () { audio.playChar(Tg.ch); }, 300);
+  }
+
+  function rateTogether(ok) {
+    var Tg = ui.together;
+    var e = T.record(st, 'listen', Tg.ch, ok, { ms: null, answered: ok ? Tg.ch : null });
+    save();
+    Tg.msg = !e ? '' : e.event === 'advance' ? 'Well done! A new letter is unlocked: ' + e.newChar + '. Study it first.'
+      : e.event === 'regress' ? 'Going back a letter to firm it up.' : 'Same letters again.';
+    nextTogether();
+  }
+
+  /* ---------- echo the rhythm ---------- */
+  function renderRhythm() {
+    var R = ui.rhythm, r = st.rhythm;
+    if (R.phase === 'idle') {
+      view.innerHTML = '<section class="card center"><h2>Echo the rhythm</h2>' +
+        '<p>Listen to a few long and short sounds, then tap them back: a quick tap for a short sound, a longer press for a long one. There are no letters, and nothing is marked wrong.</p>' +
+        '<p class="readout">Played ' + r.played + ' · matched ' + r.matched + ' · longest ' + r.best + '</p>' +
+        '<button class="btn primary big-btn" id="rstart">Start</button></section>';
+      document.getElementById('rstart').addEventListener('click', startRhythm);
+    } else if (R.phase === 'listen') {
+      view.innerHTML = '<section class="card center"><h2>Listen…</h2><p class="hint">Get ready to tap it back.</p></section>';
+    } else if (R.phase === 'tap') {
+      view.innerHTML = '<section class="card center"><h2>Your turn</h2>' +
+        '<div class="row"><button class="btn" id="rreplay">Hear it again</button></div>' +
+        '<div class="key tap" id="rkey" role="button" tabindex="0" aria-label="Tap here. Hold longer for a long sound.">Tap here · or space bar</div></section>';
+      document.getElementById('rreplay').addEventListener('click', function () { R.presses = []; audio.playCode(R.pattern, 0.1, RH.UNIT); });
+      var key = document.getElementById('rkey');
+      key.addEventListener('pointerdown', function (e) { e.preventDefault(); key.setPointerCapture(e.pointerId); rhythmOn(); });
+      key.addEventListener('pointerup', rhythmOff);
+      key.addEventListener('pointercancel', rhythmOff);
+    } else {
+      view.innerHTML = '<section class="card center"><h2>' + (R.ok ? 'You matched it!' : 'Nearly. Listen once more.') + '</h2>' +
+        '<div class="glyphs">' + glyph(R.pattern, 20) + '</div>' +
+        '<div class="row"><button class="btn" id="ragain">Hear it again</button><button class="btn primary" id="rnext">Next</button></div></section>';
+      document.getElementById('ragain').addEventListener('click', function () { audio.playCode(R.pattern, 0.1, RH.UNIT); });
+      var nx = document.getElementById('rnext');
+      nx.addEventListener('click', nextRhythm);
+      nx.focus();
+    }
+  }
+
+  function startRhythm() {
+    audio.unlock();
+    keepAwake();
+    var R = ui.rhythm;
+    R.len = Math.max(RH.MIN_LEN, Math.min(RH.MAX_LEN, (st.rhythm.best || RH.MIN_LEN) - 1));
+    R.streak = 0;
+    R.last = null;
+    nextRhythm();
+  }
+
+  function nextRhythm() {
+    clearTimers();
+    var R = ui.rhythm;
+    clearTimeout(R.endTimer);
+    R.pattern = RH.pattern(R.len, Math.random, R.last);
+    R.last = R.pattern;
+    R.presses = [];
+    R.down = 0;
+    R.phase = 'listen';
+    render();
+    var d = audio.playCode(R.pattern, 0.5, RH.UNIT);
+    later(function () { if (R.phase === 'listen') { R.phase = 'tap'; render(); } }, (d + 0.4) * 1000);
+  }
+
+  function rhythmOn() {
+    var R = ui.rhythm;
+    if (ui.tab !== 'rhythm' || R.phase !== 'tap' || R.down) return;
+    clearTimeout(R.endTimer);
+    R.down = performance.now();
+    audio.keyDown();
+    var k = document.getElementById('rkey');
+    if (k) k.classList.add('down');
+  }
+
+  function rhythmOff() {
+    var R = ui.rhythm;
+    if (!R.down) return;
+    var seconds = (performance.now() - R.down) / 1000;
+    R.down = 0;
+    audio.keyUp();
+    var k = document.getElementById('rkey');
+    if (k) k.classList.remove('down');
+    R.presses.push(seconds);
+    if (R.presses.length >= R.pattern.length) finishRhythm();
+    else R.endTimer = setTimeout(finishRhythm, 1500);
+  }
+
+  function finishRhythm() {
+    var R = ui.rhythm;
+    if (R.phase !== 'tap' || !R.presses.length) return;
+    var ok = RH.matches(R.pattern, R.presses);
+    var r = st.rhythm;
+    r.played++;
+    if (ok) { r.matched++; r.best = Math.max(r.best, R.pattern.length); }
+    var p = RH.progress({ len: R.len, streak: R.streak }, ok);
+    R.len = p.len;
+    R.streak = p.streak;
+    R.ok = ok;
+    save();
+    R.phase = 'result';
+    render();
+    say(ok ? 'You matched it' : 'Nearly. Listen once more');
+    if (!ok) later(function () { audio.playCode(R.pattern, 0.1, RH.UNIT); }, 500);
+  }
+
   /* ---------- weekly checks ---------- */
   var CHECK_TAB = { letters: 'listen', words: 'words', text: 'words', send: 'send' };
 
@@ -991,6 +1450,7 @@
     document.getElementById('ckcancel').addEventListener('click', function () { abortCheck(); go('progress'); });
   }
 
+  function levelCtx() { return { teachDays: FA.teachingDays(fam, storage()) }; }
   function checkLabel() { var ck = ui.check; return CK.DEFS[ck.kind].title + ' · ' + (ck.i + 1) + ' of ' + ck.items.length; }
   function checkRunning(kinds) { return ui.check && ui.check.state === 'run' && kinds.indexOf(ui.check.kind) >= 0; }
 
@@ -1009,11 +1469,11 @@
 
   function finishCheck() {
     var ck = ui.check, today = T.today();
-    var before = CK.levels(st, today).map(function (x) { return x.ok; });
+    var before = CK.levels(st, today, levelCtx()).map(function (x) { return x.ok; });
     var res = CK.score(ck.kind, ck.results);
     CK.record(st, ck.kind, res, today, CK.DEFS[ck.kind].cond);
     save();
-    var reached = CK.levels(st, today).filter(function (x, i) { return x.ok && !before[i]; }).map(function (x) { return x.n + ': ' + x.title; });
+    var reached = CK.levels(st, today, levelCtx()).filter(function (x, i) { return x.ok && !before[i]; }).map(function (x) { return x.n + ': ' + x.title; });
     ui.checkResult = { kind: ck.kind, res: res, results: ck.results, reached: reached };
     abortCheck();
     go('progress');
@@ -1045,7 +1505,7 @@
       .filter(function (x) { return x.s.status === 'Learning' && x.s.n > 0; })
       .slice(0, 4).map(function (x) { return '<li><strong>' + x.c + '</strong> needs ' + x.s.need.join('; ') + '</li>'; }).join('');
     var pairs = T.topPairs(st, 5).map(function (p) { return p.a + '/' + p.b + ' ×' + p.count; }).join(' · ');
-    var chips = M.KOCH_ORDER.map(function (c, i) {
+    var chips = T.order(st).map(function (c, i) {
       var state = i < st.level - 1 ? 'mastered' : i === st.level - 1 ? 'current' : 'locked';
       var label = c + ', ' + (state === 'locked' ? 'not yet unlocked' : state === 'current' ? 'newest character' : 'unlocked');
       return '<span class="chip ' + state + '" aria-label="' + label + '">' + c + '</span>';
@@ -1071,7 +1531,7 @@
         '</span></div><button class="btn small" data-check="' + k + '"' + (av.ok ? '' : ' disabled') + '>Start</button></li>';
     }).join('');
 
-    var lv = CK.levels(st, today).map(function (x) {
+    var lv = CK.levels(st, today, levelCtx()).map(function (x) {
       return '<li>' + (x.ok ? '✓ ' : '○ ') + '<strong>' + x.n + '. ' + x.title + ':</strong> ' + x.detail + (x.ok || !x.need.length ? '' : '<br><span class="hint">Still needed: ' + x.need.join('; ') + '</span>') + '</li>';
     }).join('');
 
@@ -1092,12 +1552,12 @@
       '<dt>Practised today / 7 days</dt><dd>' + Math.floor(T.minutesOn(st)) + ' / ' + Math.round(T.minutesLastDays(st, 7)) + ' min</dd></dl>' +
       '<p class="hint">The next letter unlocks when a block of 50 answers is 90% right. Below 70% the newest one steps back.</p></section>' +
 
-      '<section class="card"><h2>Weekly check</h2>' +
+      (isKid() ? '' : '<section class="card"><h2>Weekly check</h2>' +
       '<p>Short tests with no feedback until the end. They decide your levels, so they measure what you can really do. About once a week is right; do one or all four.</p>' +
       '<ol class="plan">' + checks + '</ol></section>' +
 
       '<section class="card"><h2>Your levels</h2><ul class="needs">' + lv + '</ul>' +
-      '<p class="hint">Levels 2 and 3 count a passed check for ' + CK.VALID_DAYS + ' days.</p></section>';
+      '<p class="hint">Levels 2 and 3 count a passed check for ' + CK.VALID_DAYS + ' days.</p></section>');
 
     var d = document.getElementById('drill');
     if (d) d.addEventListener('click', function () { ui.listen.focus = 'weak'; go('listen'); startListen(); });
@@ -1192,7 +1652,7 @@
       range('sendWpm', 'Sending speed (your keying)', 5, 20, 1, s.sendWpm) +
       check('echo', 'Echo mode: hear the character, letter hidden, send it back', s.echo) +
       range('volume', 'Tone volume', 0.1, 1, 0.05, s.volume) +
-      range('goalMin', 'Daily practice goal', 10, 90, 5, s.goalMin) +
+      range('goalMin', 'Daily practice goal', 5, 90, 5, s.goalMin) +
       '<div class="row"><button type="button" class="btn" id="test">Play test tone</button>' +
       '<button type="button" class="btn danger" id="reset">Reset progress</button></div></form></section>' +
 
@@ -1206,6 +1666,7 @@
       '<section class="card"><h2>Voice</h2><form class="settings" onsubmit="return false">' +
       check('speak', 'Say “Correct” or “Not quite” out loud in Listen and Send', s.speak) +
       check('phonetic', 'Also say the phonetic word, like “K, Kilo”', s.phonetic) +
+      check('voiceAnswers', 'Allow answering by voice (the browser sends your voice to its speech service, run by Google in Chrome)', s.voiceAnswers !== false) +
       '<div class="field"><label for="voiceURI">Voice</label><select id="voiceURI"></select><output id="voice-note"></output></div>' +
       check('allLangs', 'Show voices in all languages', false) +
       range('speechRate', 'Voice speed', 0.7, 1.4, 0.1, s.speechRate) +
@@ -1241,9 +1702,9 @@
       '<section class="card"><h2>Voice calibration</h2>' +
       '<p>Teach the app how the speech recogniser hears <em>you</em>. You say each letter you have unlocked once, and then its phonetic word, and the app remembers any way it mishears you.</p>' +
       '<p class="readout" id="aliascount">' + Object.keys(st.aliases).length + ' learned word' + (Object.keys(st.aliases).length === 1 ? '' : 's') + '</p>' +
-      '<div class="row"><button type="button" class="btn primary" id="calbtn"' + (V.canListen ? '' : ' disabled') + '>Calibrate my voice</button>' +
+      '<div class="row"><button type="button" class="btn primary" id="calbtn"' + (recogOk() ? '' : ' disabled') + '>Calibrate my voice</button>' +
       '<button type="button" class="btn danger" id="clearaliases"' + (Object.keys(st.aliases).length ? '' : ' disabled') + '>Clear learned words</button></div>' +
-      (V.canListen ? '' : '<p class="notice">Speech recognition is not available in this browser.</p>') + '</section>' +
+      (recogOk() ? '' : '<p class="notice">Voice answers are off or not available in this browser.</p>') + '</section>' +
 
       '<section class="card"><h2>Progress backup</h2>' +
       '<p>Your progress lives only in this browser. Save a backup now and then, and use it to move to another device. Your recorded voice has its own backup above.</p>' +
@@ -1251,7 +1712,7 @@
       '<input type="file" id="restorefile" accept="application/json,.json" class="sr"><p class="hint" id="backupmsg" role="status"></p></section>';
 
     bindRanges(['pitch', 'charWpm', 'effWpm', 'sendWpm', 'volume', 'goalMin', 'speechRate', 'speechPitch', 'speechVolume', 'thinkSec']);
-    bindChecks(['auto', 'echo', 'speak', 'phonetic']);
+    bindChecks(['auto', 'echo', 'speak', 'phonetic', 'voiceAnswers']);
     document.getElementById('test').addEventListener('click', function () { audio.unlock(); audio.playChar('K'); });
     var COND_NOTE = { clean: 'A clean tone, nothing else.', light: 'A little noise and fading, a slightly human hand.',
       real: 'Noticeable noise, fading, a wandering pitch and an uneven hand. Like a real band.', hard: 'Heavy noise and fading. For when Realistic feels easy.' };
@@ -1261,9 +1722,11 @@
     document.getElementById('condtest').addEventListener('click', function () { audio.unlock(); audio.playText('CQ TEST'); });
     document.getElementById('reset').addEventListener('click', function () {
       if (window.confirm('Reset all progress and settings? Your recordings are kept.')) {
-        st = T.defaults();
+        var keepOrder = st.order;
+        st = FA.newState(kind());
+        st.order = keepOrder;
         save();
-        go('listen');
+        go(home());
       }
     });
 
@@ -1628,6 +2091,8 @@
       }
     } else if (ui.tab === 'words') {
       if (ui.words.phase === 'reveal' && e.key === 'Enter') { e.preventDefault(); nextWord(); }
+    } else if (ui.tab === 'rhythm') {
+      if (e.key === ' ' && ui.rhythm.phase === 'tap') { e.preventDefault(); if (!e.repeat) rhythmOn(); }
     } else if (ui.tab === 'send') {
       if (e.key === ' ' && ui.send.phase === 'prompt') { e.preventDefault(); if (!e.repeat) keyOn(); }
       else if (e.key === 'Enter' && ui.send.phase === 'reveal') { e.preventDefault(); nextSend(); }
@@ -1635,6 +2100,7 @@
   });
   document.addEventListener('keyup', function (e) {
     if (ui.tab === 'send' && e.key === ' ') { e.preventDefault(); keyOff(); }
+    else if (ui.tab === 'rhythm' && e.key === ' ') { e.preventDefault(); rhythmOff(); }
   });
 
   /* ---------- service worker ---------- */
@@ -1646,5 +2112,5 @@
   V.onVoicesChanged(function () { if (ui.tab === 'settings' && ui.settingsView === 'main') fillVoices(); });
 
   render();
-  window.__app = { st: function () { return st; }, ui: ui };
+  window.__app = { st: function () { return st; }, ui: ui, fam: function () { return fam; } };
 })();

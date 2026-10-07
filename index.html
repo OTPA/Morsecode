@@ -13,19 +13,22 @@
 </head>
 <body>
   <header class="top">
-    <h1>Morse Ear Trainer</h1>
+    <div class="titlebar"><h1>Morse Ear Trainer</h1><button type="button" id="who" class="who" aria-label="Who is learning"></button></div>
     <nav class="tabs" role="tablist" aria-label="Sections">
+      <button role="tab" data-tab="play">Play</button>
       <button role="tab" data-tab="today">Today</button>
       <button role="tab" data-tab="practice">Practice</button>
       <button role="tab" data-tab="voice">Voice</button>
       <button role="tab" data-tab="progress">Progress</button>
       <button role="tab" data-tab="settings">Settings</button>
+      <button role="tab" data-tab="family">Parent</button>
     </nav>
     <nav class="tabs sub" id="subtabs" role="tablist" aria-label="Practice modes" hidden>
       <button role="tab" data-tab="learn">Learn</button>
       <button role="tab" data-tab="listen">Listen</button>
       <button role="tab" data-tab="words">Words</button>
       <button role="tab" data-tab="send">Send</button>
+      <button role="tab" data-tab="together">Together</button>
     </nav>
     <div id="sessionbar" class="sessionbar" hidden></div>
   </header>
@@ -43,6 +46,8 @@
   <script src="js/voice.js"></script>
   <script src="js/audioedit.js"></script>
   <script src="js/clips.js"></script>
+  <script src="js/family.js"></script>
+  <script src="js/rhythm.js"></script>
   <script src="js/tracks.js"></script>
   <script src="js/app.js"></script>
 </body>

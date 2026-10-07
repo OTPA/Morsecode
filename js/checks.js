@@ -7,6 +7,7 @@
   var PASS = 0.95;
   var WEEK = 7;
   var VALID_DAYS = 45;   // a pass counts towards a level for this long
+  var TEACH_DAYS = 10;   // days children have practised, for the Teacher level
 
   // c / s: character and effective speed during the check (letters: whatever the learner has set).
   var DEFS = {
@@ -113,13 +114,14 @@
   }
 
   /** The four levels, with what each still needs. */
-  function levels(st, today) {
+  function levels(st, today, ctx) {
     var s = st.settings;
     var learned = Morse.KOCH_ORDER.filter(function (c) { var q = Trainer.charStatus(st, c).status; return q === 'Learned' || q === 'Solid'; }).length;
     var l1 = learned === Morse.KOCH_ORDER.length && s.effWpm >= 12;
     var words = passed(st, 'words', today), text = passed(st, 'text', today), send = passed(st, 'send', today);
     var l2 = l1 && words;
     var l3 = l2 && text && send;
+    var teachDays = (ctx && ctx.teachDays) || 0;
     function need(list) { return list.filter(Boolean); }
     return [
       { n: 1, title: 'Foundation', ok: l1, detail: 'all 40 characters learned (' + learned + ' of 40), at 12 WPM effective or faster (now ' + s.effWpm + ')',
@@ -128,7 +130,9 @@
         need: need([!l1 && 'Foundation first', l1 && !words && 'pass the Words check']) },
       { n: 3, title: 'Proficient', ok: l3, detail: 'Fluent, a Text check passed (20 WPM with light noise, 95% of characters) and a Sending check passed (15 WPM, 95%)',
         need: need([!l2 && 'Fluent first', l2 && !text && 'pass the Text check', l2 && !send && 'pass the Sending check']) },
-      { n: 4, title: 'Teacher', ok: false, detail: 'lead a short lesson with your children (family profiles come in a later update)', need: ['family profiles (later update)'] }
+      { n: 4, title: 'Teacher', ok: l3 && teachDays >= TEACH_DAYS,
+        detail: 'Proficient, and you have helped children practise on at least ' + TEACH_DAYS + ' different days (' + teachDays + ' so far)',
+        need: need([!l3 && 'Proficient first', l3 && teachDays < TEACH_DAYS && (TEACH_DAYS - teachDays) + ' more days of a child practising']) }
     ];
   }
 
@@ -140,6 +144,6 @@
     return { due: days >= WEEK, days: days };
   }
 
-  return { DEFS: DEFS, PASS: PASS, WEEK: WEEK, VALID_DAYS: VALID_DAYS, similarity: similarity, available: available, items: items, score: score,
+  return { DEFS: DEFS, PASS: PASS, WEEK: WEEK, VALID_DAYS: VALID_DAYS, TEACH_DAYS: TEACH_DAYS, similarity: similarity, available: available, items: items, score: score,
     record: record, latest: latest, passed: passed, levels: levels, due: due };
 });

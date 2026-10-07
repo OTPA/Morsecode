@@ -204,3 +204,10 @@ test('coach: plateau note, check due note, goal done note, never more than two',
   assert.equal(n.length, 2);
   assert.ok(Coach.notes(fresh(), day(0)).length === 0, 'a brand-new learner gets no nagging');
 });
+
+test('coach: the check-due note can be switched off (children have no weekly checks)', () => {
+  const st = fresh(); st.level = 12; st.levelDate = day(0);
+  st.log[day(11)] = 600;
+  assert.ok(Coach.notes(st, day(11)).some((x) => /weekly check/.test(x.text)));
+  assert.ok(!Coach.notes(st, day(11), { checks: false }).some((x) => /weekly check/.test(x.text)));
+});

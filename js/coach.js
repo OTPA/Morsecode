@@ -11,7 +11,8 @@
   /**
    * Up to two notes, most useful first: [{text, action?}]. action is a screen to open ('learn', 'progress').
    */
-  function notes(st, today) {
+  function notes(st, today, opts) {
+    opts = opts || {};
     var out = [];
     var goal = st.settings.goalMin;
     var last = lastPracticeDay(st);
@@ -33,7 +34,7 @@
       out.push({ text: 'You have been on level ' + st.level + ' for ' + Trainer.daysBetween(st.levelDate, today) + ' days. A plateau is normal. Short daily sessions, a rest day, and the study block usually break it.' });
     }
 
-    var d = Checks.due(st, today);
+    var d = opts.checks === false ? { due: false } : Checks.due(st, today);
     if (d.due) {
       out.push({ text: d.days === null ? 'You have unlocked enough letters for a first weekly check. It shows where you really stand.' : 'Your weekly check is due (last one ' + d.days + ' days ago).', action: 'progress' });
     }

@@ -150,3 +150,22 @@ h3 { margin: var(--space-6) 0 var(--space-2); font: 700 18px/24px var(--font-ser
 
 ul.coach { list-style: none; margin: var(--space-4) 0; padding: 0; display: grid; gap: var(--space-2); text-align: left; }
 ul.coach li { padding: var(--space-3); border: 2px solid var(--signal); border-radius: var(--radius-md); background: var(--surface-raised); }
+
+/* family profiles */
+.titlebar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-3); }
+.titlebar h1 { margin: 0; }
+.who { min-height: 40px; max-width: 45%; padding: 0 var(--space-3); border: 2px solid var(--line); border-radius: var(--radius-md); background: var(--surface-raised); color: var(--ink); font: 600 14px/20px var(--font-sans); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cards { display: grid; gap: var(--space-3); margin: var(--space-4) 0; }
+.bigcard { display: block; width: 100%; padding: var(--space-6) var(--space-4); border: 3px solid var(--signal); border-radius: var(--radius-lg); background: var(--surface-raised); color: var(--ink); font: 700 24px/30px var(--font-serif); cursor: pointer; text-align: center; }
+.bigcard small { display: block; margin-top: var(--space-1); font: 14px/20px var(--font-sans); color: var(--ink-muted); }
+.famrow { display: grid; gap: var(--space-1); padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-md); text-align: left; }
+.famrow .row { justify-content: flex-start; margin: var(--space-2) 0 0; }
+ul.fam { list-style: none; margin: var(--space-3) 0; padding: 0; display: grid; gap: var(--space-3); }
+.gatebox input { width: 120px; text-align: center; }
+.guide h3 { margin-top: var(--space-4); }
+.tap { min-height: 200px; }
+@media print {
+  .top, .noprint, #sessionbar { display: none !important; }
+  body { background: #fff; color: #000; }
+  .card { border: 0; padding: 0; }
+}

@@ -69,7 +69,7 @@
    */
   function plan(st) {
     var all = Trainer.unlocked(st);
-    var fresh = Morse.KOCH_ORDER.slice(st.introduced, st.level);
+    var fresh = Trainer.order(st).slice(st.introduced, st.level);
     if (fresh.length) {
       return { target: fresh.slice(0, 2), known: all.filter(function (c) { return fresh.indexOf(c) < 0; }), fresh: true };
     }
