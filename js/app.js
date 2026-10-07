@@ -6,8 +6,12 @@
   var audio = new window.MorseAudio(function () { return st.settings; });
 
   var ui = {
-    tab: 'listen',
-    listen: { phase: 'idle', last: null },
+    tab: 'today',
+    lastPractice: null,
+    session: null,
+    listen: { phase: 'idle', last: null, focus: null, skipStudy: false, endAt: 0 },
+    learn: { running: false, done: null, message: '', token: null },
+    words: { phase: 'idle', last: null, item: null, cmp: null },
     send: { phase: 'idle', last: null, pattern: '', down: 0, endTimer: null },
     voice: { running: false, mode: 'quiz', last: null, message: '' },
     settingsView: 'main',
@@ -15,6 +19,7 @@
     cal: null
   };
   var VP = window.VoiceParse, V = window.Voice, C = window.Clips;
+  var STU = window.Study, WD = window.Words, TR = window.Tracks;
   var timers = [];
   var view = document.getElementById('view');
   var live = document.getElementById('live');
@@ -120,77 +125,219 @@
   }
 
   /* ---------- tabs ---------- */
+  // Five main tabs; "Practice" opens one of four modes, picked from a second row.
+  var GROUP = { today: 'today', learn: 'practice', listen: 'practice', words: 'practice', send: 'practice',
+    voice: 'voice', progress: 'progress', settings: 'settings' };
   var tabs = Array.prototype.slice.call(document.querySelectorAll('.tabs button'));
+  var subtabs = document.getElementById('subtabs');
+  var sessionbar = document.getElementById('sessionbar');
+
   tabs.forEach(function (b) {
-    b.addEventListener('click', function () { go(b.getAttribute('data-tab')); });
+    b.addEventListener('click', function () {
+      var t = b.getAttribute('data-tab');
+      go(t === 'practice' ? (ui.lastPractice || (st.introduced < st.level ? 'learn' : 'listen')) : t);
+    });
   });
+
   function go(tab) {
     clearTimers();
     releaseKey();
     stopVoice();
+    stopStudy();
     stopCalibration();
     if (ui.rec && ui.rec.session) ui.rec.session.stop();
     cancelSpeech();
     clearTimeout(ui.send.endTimer);
     ui.settingsView = 'main';
     ui.tab = tab;
+    if (GROUP[tab] === 'practice') ui.lastPractice = tab;
     // a half-finished trial restarts cleanly when you come back
     if (ui.listen.phase !== 'idle') ui.listen.phase = 'idle';
     if (ui.send.phase !== 'idle') ui.send.phase = 'idle';
+    if (ui.words.phase !== 'idle') ui.words.phase = 'idle';
     render();
   }
+
   function render() {
-    tabs.forEach(function (b) { b.setAttribute('aria-selected', String(b.getAttribute('data-tab') === ui.tab)); });
-    ({ listen: renderListen, send: renderSend, voice: renderVoice, progress: renderProgress, settings: renderSettings })[ui.tab]();
+    tabs.forEach(function (b) {
+      var t = b.getAttribute('data-tab');
+      var inSub = subtabs.contains(b);
+      b.setAttribute('aria-selected', String(inSub ? t === ui.tab : t === GROUP[ui.tab]));
+    });
+    subtabs.hidden = GROUP[ui.tab] !== 'practice';
+    renderSessionBar();
+    ({ today: renderToday, learn: renderLearn, listen: renderListen, words: renderWords, send: renderSend, voice: renderVoice,
+      progress: renderProgress, settings: renderSettings })[ui.tab]();
   }
 
-  /* ---------- listen ---------- */
+  /* ---------- today: the daily plan ---------- */
+  var BLOCKS = [['warm', 0.125], ['study', 0.2], ['weak', 0.25], ['send', 0.175], ['words', 0.175], ['cool', 0.075]];
+
+  function learnedLetters() {
+    return T.unlocked(st).filter(function (c) { var s = T.charStatus(st, c).status; return s === 'Learned' || s === 'Solid'; });
+  }
+
+  /** The plan for today, scaled to the daily goal. New letters are studied before any quiz. */
+  function buildPlan() {
+    var goal = st.settings.goalMin;
+    var p = STU.plan(st);
+    var haveLearned = learnedLetters().length > 0;
+    var wordsOk = WD.matching(T.unlocked(st), st.customWords).length >= WD.MIN_WORDS;
+    var mins = {};
+    BLOCKS.forEach(function (b) { mins[b[0]] = Math.max(1, Math.round(goal * b[1])); });
+    var info = {
+      warm: { title: 'Warm-up review', tab: 'listen', focus: 'review', why: 'Letters you have already learned, so they stay sharp.' },
+      study: { title: p.fresh ? 'Study new letters: ' + p.target.join(' and ') : 'Study your shakiest letters: ' + p.target.join(' and '), tab: 'learn',
+        why: 'Each letter is named, then you hear its sound. Nothing is marked.' },
+      weak: { title: 'Weak-spot drill', tab: 'listen', focus: 'weak', why: 'The letters and pairs you mix up most.' },
+      send: { title: 'Send', tab: 'send', why: 'Key letters yourself and hear your own tone.' },
+      words: { title: wordsOk ? 'Words' : 'Letter groups', tab: 'words', why: 'Copy a whole word after it has played.' },
+      cool: { title: 'Cool-down: listen only', tab: 'voice', vmode: 'listen', why: 'Sound, a pause to think, then the letter. No answers needed.' }
+    };
+    var order = p.fresh ? ['study', 'warm', 'weak', 'send', 'words', 'cool'] : ['warm', 'study', 'weak', 'send', 'words', 'cool'];
+    if (!haveLearned) {                       // nothing to review yet: fold the warm-up into quizzing
+      order = order.filter(function (k) { return k !== 'warm'; });
+      mins.weak += mins.warm;
+      info.weak.title = 'Listen practice';
+      info.weak.focus = null;
+      info.weak.why = 'Quiz yourself on the letters you have studied.';
+    }
+    var blocks = order.map(function (k) { var b = info[k]; b.id = k; b.min = mins[k]; return b; });
+    var sum = blocks.reduce(function (a, b) { return a + b.min; }, 0);
+    blocks[blocks.length - 1].min = Math.max(1, blocks[blocks.length - 1].min + goal - sum);
+    return blocks;
+  }
+
+  function renderToday() {
+    var goal = st.settings.goalMin, mins = T.minutesOn(st), week = T.minutesLastDays(st, 7);
+    var counts = T.countByStatus(st);
+    var plan = buildPlan();
+    var items = plan.map(function (b, i) {
+      return '<li><div><strong>' + b.title + '</strong> <span class="hint">· ' + b.min + ' min</span><br><span class="hint">' + b.why +
+        '</span></div><button class="btn" data-block="' + i + '">Start</button></li>';
+    }).join('');
+    view.innerHTML = '<section class="card"><h2>Today</h2>' +
+      '<p class="readout">' + Math.floor(mins) + ' of ' + goal + ' min today · ' + Math.round(week) + ' min in the last 7 days</p>' +
+      '<div class="meter wide" aria-hidden="true"><div style="width:' + Math.min(100, Math.round(mins / goal * 100)) + '%"></div></div>' +
+      '<p class="readout">Level ' + st.level + ' of ' + M.KOCH_ORDER.length + ' · Solid ' + counts.Solid + ' · Learned ' + counts.Learned +
+      ' · Learning ' + counts.Learning + ' · New ' + counts.New + '</p>' +
+      '<button class="btn primary big-btn" id="startplan">Start today’s plan</button>' +
+      '<ol class="plan">' + items + '</ol>' +
+      '<p class="hint">A new letter is always studied before it is ever quizzed. Short, regular sessions beat one long one: if you only have a few minutes, do the first block.</p></section>';
+    document.getElementById('startplan').addEventListener('click', function () { startPlan(plan, 0); });
+    Array.prototype.forEach.call(view.querySelectorAll('[data-block]'), function (b) {
+      b.addEventListener('click', function () { startPlan(plan, Number(b.getAttribute('data-block'))); });
+    });
+  }
+
+  function startPlan(plan, i) {
+    audio.unlock();
+    ui.session = { blocks: plan, i: i, endAt: 0 };
+    runBlock();
+  }
+
+  function runBlock() {
+    var s = ui.session, b = s.blocks[s.i];
+    s.endAt = Date.now() + b.min * 60000;
+    s.over = false;
+    ui.listen.focus = b.focus || null;
+    ui.listen.skipStudy = false;
+    if (b.vmode) st.settings.voiceMode = b.vmode;
+    go(b.tab);
+    var start = { listen: startListen, learn: startStudyScreen, send: startSend, words: startWords, voice: startVoice }[b.tab];
+    start();
+  }
+
+  function renderSessionBar() {
+    var s = ui.session;
+    if (!s) { sessionbar.hidden = true; sessionbar.textContent = ''; return; }
+    sessionbar.hidden = false;
+    var b = s.blocks[s.i], last = s.i === s.blocks.length - 1;
+    sessionbar.innerHTML = '<span id="sbtext"></span><span class="sbbtns">' +
+      '<button class="btn small" id="sbnext">' + (last ? 'Finish plan' : 'Next block') + '</button>' +
+      '<button class="btn small" id="sbend">End</button></span>';
+    document.getElementById('sbnext').addEventListener('click', function () {
+      if (last) { ui.session = null; go('today'); } else { s.i++; runBlock(); }
+    });
+    document.getElementById('sbend').addEventListener('click', function () { ui.session = null; render(); });
+    updateSessionBar();
+  }
+
+  function updateSessionBar() {
+    var s = ui.session, t = document.getElementById('sbtext');
+    if (!s || !t) return;
+    var left = Math.max(0, Math.round((s.endAt - Date.now()) / 1000));
+    var b = s.blocks[s.i];
+    var text = left > 0
+      ? 'Block ' + (s.i + 1) + ' of ' + s.blocks.length + ' · ' + b.title.split(':')[0] + ' · ' + Math.floor(left / 60) + ':' + ('0' + (left % 60)).slice(-2) + ' left'
+      : 'Block ' + (s.i + 1) + ' time is up. Finish this answer, then move on.';
+    if (t.textContent !== text) t.textContent = text;
+    if (left === 0 && !s.over) { s.over = true; say('This block is finished. Choose next block when you are ready.'); }
+  }
+
+  /** Once a second: count practice time and keep the session timer fresh. */
+  var tickCount = 0;
+  setInterval(function () {
+    if (document.visibilityState !== 'visible') return;
+    var active = (ui.tab === 'listen' && ui.listen.phase !== 'idle') || (ui.tab === 'send' && ui.send.phase !== 'idle') ||
+      (ui.tab === 'learn' && ui.learn.running) || (ui.tab === 'words' && ui.words.phase !== 'idle') ||
+      (ui.tab === 'voice' && ui.voice.running);
+    if (active) {
+      T.logSeconds(st, 1);
+      if (++tickCount % 15 === 0) save();
+    }
+    updateSessionBar();
+  }, 1000);
+
+  /* ---------- listen: the quiz ---------- */
   function readout() {
     var s = st.settings;
     return '<p class="readout">Level ' + st.level + ' of ' + M.KOCH_ORDER.length + ' · ' + s.charWpm + '/' + s.effWpm +
       ' WPM · block ' + st.block.length + '/' + T.BLOCK + '</p>';
   }
 
+  var FOCUS_LABEL = { review: 'Focus: letters you have already learned', weak: 'Focus: your weak spots' };
+
   function renderListen() {
     var L = ui.listen;
+    var unstudied = st.introduced < st.level;
     if (L.phase === 'idle') {
       view.innerHTML = '<section class="card center"><h2>Listen</h2>' +
-        '<p>You will hear one character at a time. Say which one it was. There is nothing to look at: just listen.</p>' +
-        readout() + '<button class="btn primary" id="start">Start</button></section>';
-      document.getElementById('start').addEventListener('click', startListen);
-    } else if (L.phase === 'intro') {
-      view.innerHTML = '<section class="card center"><p class="label">New character</p>' +
-        '<div class="big" aria-label="' + L.introChar + '">' + L.introChar + '</div>' +
-        '<p class="hint" id="count">Played 0 of 5</p>' +
-        '<div class="row"><button class="btn" id="again">Play again</button>' +
-        '<button class="btn primary" id="gotit">Got it</button></div></section>';
-      document.getElementById('again').addEventListener('click', function () { audio.playChar(L.introChar); });
-      document.getElementById('gotit').addEventListener('click', function () {
-        clearTimers();
-        st.introduced++;
-        save();
-        afterIntro();
-      });
+        '<p>This is the quiz. You hear one character at a time and say which one it was. There is nothing to look at: just listen.</p>' +
+        (unstudied ? '<p class="notice" role="alert">You have letters you have not studied yet: ' + M.KOCH_ORDER.slice(st.introduced, st.level).join(' and ') +
+          '. Study them first, so you know which sound belongs to which letter before you are tested.</p>' +
+          '<div class="row"><button class="btn primary" id="gostudy">Study them now</button><button class="btn" id="skipstudy">Quiz me anyway</button></div>' : '') +
+        (L.focus ? '<p class="hint">' + FOCUS_LABEL[L.focus] + '</p>' : '') +
+        readout() + (unstudied ? '' : '<button class="btn primary" id="start">Start</button>') + '</section>';
+      var s = document.getElementById('start');
+      if (s) s.addEventListener('click', startListen);
+      if (unstudied) {
+        document.getElementById('gostudy').addEventListener('click', function () { go('learn'); startStudyScreen(); });
+        document.getElementById('skipstudy').addEventListener('click', function () { L.skipStudy = true; startListen(); });
+      }
     } else if (L.phase === 'prompt') {
       var keys = T.unlocked(st).map(function (c) { return '<button type="button" data-ch="' + c + '" aria-label="' + c + '">' + c + '</button>'; }).join('');
       view.innerHTML = '<section class="card center">' + readout() +
         '<h2>Which character?</h2><p class="hint">Type it or tap it.</p>' +
         '<div class="row"><button class="btn primary" id="replay">Replay</button></div>' +
         '<div class="pad" id="pad">' + keys + '</div></section>';
-      document.getElementById('replay').addEventListener('click', function () { audio.playChar(L.ch); });
+      document.getElementById('replay').addEventListener('click', function () { playListen(); });
       document.getElementById('pad').addEventListener('click', function (e) {
         var b = e.target.closest('button[data-ch]');
         if (b) answerListen(b.getAttribute('data-ch'));
       });
     } else {
       var ok = L.ok, e = L.event, msg = '';
-      if (e && e.event === 'advance') msg = 'Block complete: ' + pct(e.accuracy) + '. New character unlocked: ' + e.newChar + '.';
+      if (e && e.event === 'advance') msg = 'Block complete: ' + pct(e.accuracy) + '. New character unlocked: ' + e.newChar + '. You will study it first.';
       else if (e && e.event === 'regress') msg = 'Block complete: ' + pct(e.accuracy) + '. Going back one character to firm it up.';
       else if (e) msg = 'Block complete: ' + pct(e.accuracy) + '. Same characters again.';
+      var cs = T.charStatus(st, L.ch);
+      var mastery = L.became ? L.ch + ' is now ' + L.became + '.' : L.ch + ': ' + cs.status + (cs.need.length ? ' (needs ' + cs.need[0] + ')' : '');
       view.innerHTML = '<section class="card center"><span class="status ' + (ok ? 'correct' : 'wrong') + '">' +
         (ok ? '✓ Correct' : '✕ Not quite, it was ' + L.ch) + '</span>' +
         '<div class="big">' + L.ch + '</div>' +
         '<div class="glyphs">' + glyph(M.TABLE[L.ch], 16) + '</div>' +
+        '<p class="hint">' + mastery + '</p>' +
         (msg ? '<p>' + msg + '</p>' : '') +
         '<div class="row"><button class="btn" id="again">Play again</button>' +
         '<button class="btn primary" id="next">Next</button></div></section>';
@@ -207,43 +354,50 @@
     afterIntro();
   }
 
+  /** Between questions: if a new letter has not been studied yet, study comes first. */
   function afterIntro() {
     clearTimers();
-    if (st.introduced < st.level) startIntro();
-    else nextListen();
+    if (st.introduced < st.level && !ui.listen.skipStudy) {
+      ui.learn.message = 'A new letter is ready: ' + M.KOCH_ORDER.slice(st.introduced, st.level).join(' and ') +
+        '. Study it first, then come back to the quiz.';
+      go('learn');
+      return;
+    }
+    nextListen();
   }
 
-  function startIntro() {
+  function listenOpts() {
+    var f = ui.listen.focus;
+    if (f === 'weak') return { only: T.weakSet(st) };
+    if (f === 'review') { var learned = learnedLetters(); return learned.length ? { only: learned, review: false } : {}; }
+    return {};
+  }
+
+  function playListen() {
     var L = ui.listen;
-    L.phase = 'intro';
-    L.introChar = M.KOCH_ORDER[st.introduced];
-    var played = 0;
-    render();
-    (function loop() {
-      if (ui.tab !== 'listen' || L.phase !== 'intro') return;
-      var dur = audio.playChar(L.introChar);
-      played++;
-      var c = document.getElementById('count');
-      if (c) c.textContent = 'Played ' + played + ' of 5';
-      if (played < 5) later(loop, (dur + 1.1) * 1000);
-    })();
+    var dur = audio.playChar(L.ch);
+    L.endAt = performance.now() + dur * 1000;   // answer time is measured from the end of the sound
   }
 
   function nextListen() {
     var L = ui.listen;
-    L.ch = T.pick(st, 'listen', Math.random, L.last);
+    L.ch = T.pick(st, 'listen', Math.random, L.last, listenOpts());
     L.last = L.ch;
     L.phase = 'prompt';
     render();
-    later(function () { audio.playChar(L.ch); }, 300);
+    later(playListen, 300);
   }
 
   function answerListen(letter) {
     var L = ui.listen;
     if (L.phase !== 'prompt') return;
     var ok = letter === L.ch;
+    var ms = Math.max(0, performance.now() - L.endAt);
+    var before = T.charStatus(st, L.ch).status;
     L.ok = ok;
-    L.event = T.record(st, 'listen', L.ch, ok);
+    L.event = T.record(st, 'listen', L.ch, ok, { ms: ms, answered: letter });
+    var after = T.charStatus(st, L.ch).status;
+    L.became = (after === 'Learned' || after === 'Solid') && before !== after && before !== 'Solid' ? after : null;
     save();
     L.phase = 'reveal';
     render();
@@ -253,7 +407,7 @@
       if (!ok && ui.tab === 'listen' && L.phase === 'reveal' && L.ch === shown) audio.playChar(shown);
     });
     if (!ok && !spoke) later(function () { audio.playChar(L.ch); }, 400);
-    else if (ok && !L.event) later(afterIntro, spoke ? 1400 : 900);
+    else if (ok && !L.event && !L.became) later(afterIntro, spoke ? 1400 : 900);
   }
 
   /* ---------- send (keying practice) ---------- */
@@ -355,21 +509,212 @@
     else if (S.ok) later(nextSend, spoke ? 1500 : 1000);
   }
 
+  /* ---------- study engine (used by Learn, Voice and Today) ---------- */
+  /**
+   * Play study steps. hooks.step(step, i, n) lets the caller show what is happening.
+   * token: {stop, paused, waiters}. A name is spoken (recorded voice or the chosen voice); a tone is played.
+   */
+  async function runStudy(steps, token, hooks) {
+    for (var i = 0; i < steps.length && !token.stop; i++) {
+      while (token.paused && !token.stop) await wait(200, token);
+      if (token.stop) break;
+      var s = steps[i];
+      if (hooks && hooks.step) hooks.step(s, i, steps.length);
+      if (s.t === 'pause') await wait(s.s * 1000, token);
+      else if (s.t === 'tone') { var d = audio.playChar(s.ch); await wait((d + 0.15) * 1000, token); }
+      else await talk(charParts(s.ch, ''));
+    }
+  }
+
+  /** Mark the letters of a finished study session as studied, so the quiz may include them. */
+  function markStudied(plan) {
+    if (!plan.fresh) return;
+    var last = M.KOCH_ORDER.indexOf(plan.target[plan.target.length - 1]) + 1;
+    if (last > st.introduced) { st.introduced = Math.min(last, st.level); save(); }
+  }
+
+  /* ---------- learn ---------- */
+  var ROUND_CAPTION = { A: 'Its name, then its sound', B: 'Its sound… think of the letter… then its name', C: 'Mixed: sound, think, name' };
+
+  function stopStudy() {
+    var t = ui.learn.token;
+    if (t) { t.stop = true; t.waiters.slice().forEach(function (f) { f(); }); }
+    ui.learn.token = null;
+    ui.learn.running = false;
+  }
+
+  function renderLearn() {
+    var Ln = ui.learn;
+    if (Ln.running) {
+      view.innerHTML = '<section class="card center"><p class="label" id="lround">Study</p>' +
+        '<div class="big" id="lbig">…</div><p class="hint" id="lcap"> </p>' +
+        '<div class="meter wide" aria-hidden="true"><div id="lprog"></div></div>' +
+        '<div class="row"><button class="btn" id="lpause">Pause</button><button class="btn primary" id="lstop">Stop</button></div></section>';
+      document.getElementById('lpause').addEventListener('click', function () {
+        var t = Ln.token;
+        if (!t) return;
+        t.paused = !t.paused;
+        document.getElementById('lpause').textContent = t.paused ? 'Resume' : 'Pause';
+      });
+      document.getElementById('lstop').addEventListener('click', function () { stopStudy(); render(); });
+      return;
+    }
+    if (Ln.done) {
+      view.innerHTML = '<section class="card center"><h2>Studied</h2>' +
+        '<p>You have met ' + Ln.done.join(' and ') + '. Nothing was marked. When you can think of the letter <em>before</em> its name is spoken, you are ready to be quizzed.</p>' +
+        '<div class="row"><button class="btn" id="again">Study again</button><button class="btn primary" id="toquiz">Go to the quiz</button></div></section>';
+      document.getElementById('again').addEventListener('click', function () { Ln.done = null; startStudyScreen(); });
+      document.getElementById('toquiz').addEventListener('click', function () { Ln.done = null; go('listen'); });
+      return;
+    }
+    var p = STU.plan(st);
+    var chips = p.target.map(function (c) { return '<span class="chip current" aria-label="' + c + '">' + c + '</span>'; }).join('');
+    view.innerHTML = '<section class="card center"><h2>Learn</h2>' +
+      '<p>Meet each letter before you are tested on it. For every letter you hear its <strong>name</strong>, then its <strong>sound</strong>. Then you hear the sound first, get a moment to think of the letter, and hear the name. Nothing is marked, so you cannot get it wrong.</p>' +
+      (Ln.message ? '<p class="notice" role="status">' + Ln.message + '</p>' : '') +
+      '<p class="label">' + (p.fresh ? 'New letters' : 'Review: your shakiest letters') + '</p><div class="ladder" style="justify-content:center">' + chips + '</div>' +
+      '<button class="btn primary big-btn" id="lstart">Start studying</button>' +
+      '<p class="hint">This takes about two minutes for two letters. The name is spoken with the voice or recordings you chose in Settings.</p></section>';
+    document.getElementById('lstart').addEventListener('click', startStudyScreen);
+  }
+
+  function startStudyScreen() {
+    audio.unlock();
+    keepAwake();
+    var Ln = ui.learn;
+    stopStudy();
+    Ln.message = '';
+    Ln.done = null;
+    var plan = STU.plan(st);
+    var steps = STU.session({ target: plan.target, known: plan.known });
+    var token = Ln.token = { stop: false, paused: false, waiters: [] };
+    Ln.running = true;
+    render();
+    function show(s, i, n) {
+      var big = document.getElementById('lbig'), cap = document.getElementById('lcap'), rd = document.getElementById('lround'), pr = document.getElementById('lprog');
+      if (!big) return;
+      big.textContent = s.show ? s.ch : '?';
+      cap.textContent = ROUND_CAPTION[s.round] || '';
+      rd.textContent = 'Study · ' + (s.round === 'A' ? 'Round 1' : s.round === 'B' ? 'Round 2' : 'Round 3');
+      pr.style.width = Math.round(i / n * 100) + '%';
+    }
+    runStudy(steps, token, { step: show }).then(function () {
+      if (token.stop) return;
+      markStudied(plan);
+      Ln.running = false;
+      Ln.token = null;
+      Ln.done = plan.target;
+      if (ui.tab === 'learn') render();
+    });
+  }
+
+  /* ---------- words (head copy) ---------- */
+  function renderWords() {
+    var Wd = ui.words, allowed = T.unlocked(st);
+    var n = WD.matching(allowed, st.customWords).length;
+    if (Wd.phase === 'idle') {
+      var custom = st.customWords.map(function (w, i) {
+        return '<span class="chip" style="width:auto;padding:0 8px">' + w + ' <button type="button" class="x" data-rm="' + i + '" aria-label="Remove ' + w + '">×</button></span>';
+      }).join(' ');
+      view.innerHTML = '<section class="card center"><h2>Words</h2>' +
+        '<p>Listen to the <strong>whole word</strong>, then type it. This trains you to hold a few letters in your head, which is how real copying works.</p>' +
+        '<p class="readout">' + (n >= WD.MIN_WORDS ? n + ' words use only your unlocked letters' : 'Not enough words yet: you will copy short groups of letters') +
+        ' · last 20: ' + pct(T.accuracy(st.words.recent)) + '</p>' +
+        '<button class="btn primary big-btn" id="wstart">Start</button>' +
+        '<h3>Your own words</h3><p class="hint">Add names or words that matter to you. They are used once all their letters are unlocked.</p>' +
+        '<form id="wform" class="row"><input id="wnew" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="12" aria-label="A word to add" placeholder="e.g. a name">' +
+        '<button class="btn" type="submit">Add</button></form><div class="ladder" style="justify-content:center">' + custom + '</div></section>';
+      document.getElementById('wstart').addEventListener('click', startWords);
+      document.getElementById('wform').addEventListener('submit', function (e) {
+        e.preventDefault();
+        var w = WD.clean(document.getElementById('wnew').value);
+        if (w && /^[A-Z0-9]+$/.test(w) && st.customWords.indexOf(w) < 0 && st.customWords.length < 30) { st.customWords.push(w); save(); }
+        renderWords();
+      });
+      Array.prototype.forEach.call(view.querySelectorAll('[data-rm]'), function (b) {
+        b.addEventListener('click', function () { st.customWords.splice(Number(b.getAttribute('data-rm')), 1); save(); renderWords(); });
+      });
+    } else if (Wd.phase === 'prompt') {
+      view.innerHTML = '<section class="card center"><p class="label">' + (Wd.item.kind === 'word' ? 'Copy the whole word' : 'Copy the letters') + '</p>' +
+        '<h2>Listen, then type what you heard</h2>' +
+        '<div class="row"><button class="btn primary" id="wreplay">Replay</button></div>' +
+        '<form id="wanswer" class="row"><input id="wtext" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Your answer">' +
+        '<button class="btn primary" type="submit">Check</button></form></section>';
+      document.getElementById('wreplay').addEventListener('click', playWord);
+      document.getElementById('wanswer').addEventListener('submit', function (e) { e.preventDefault(); answerWord(document.getElementById('wtext').value); });
+      document.getElementById('wtext').focus();
+    } else {
+      var c = Wd.cmp;
+      var letters = c.letters.map(function (l) {
+        return '<span class="wl ' + (l.ok ? 'ok' : 'bad') + '" aria-label="' + (l.want || 'extra') + (l.ok ? ' right' : ' wrong') + '">' + (l.want || '·') + '</span>';
+      }).join('');
+      view.innerHTML = '<section class="card center"><span class="status ' + (c.ok ? 'correct' : 'wrong') + '">' + (c.ok ? '✓ Correct' : '✕ Not quite') + '</span>' +
+        '<div class="word">' + letters + '</div>' +
+        (c.ok ? '' : '<p class="hint">You typed ' + (c.answer || 'nothing') + '.</p>') +
+        '<div class="row"><button class="btn" id="wagain">Hear it again</button><button class="btn primary" id="wnext">Next</button></div></section>';
+      document.getElementById('wagain').addEventListener('click', playWord);
+      var nx = document.getElementById('wnext');
+      nx.addEventListener('click', nextWord);
+      nx.focus();
+    }
+  }
+
+  function startWords() {
+    audio.unlock();
+    keepAwake();
+    nextWord();
+  }
+
+  function nextWord() {
+    clearTimers();
+    var Wd = ui.words;
+    Wd.item = WD.next(T.unlocked(st), Math.random, Wd.last, st.customWords);
+    Wd.last = Wd.item.text;
+    Wd.phase = 'prompt';
+    render();
+    later(playWord, 400);
+  }
+
+  function playWord() { audio.playText(ui.words.item.text); }
+
+  function answerWord(text) {
+    var Wd = ui.words;
+    if (Wd.phase !== 'prompt') return;
+    var cmp = WD.compare(Wd.item.text, text);
+    if (!cmp.answer) return;                       // nothing typed yet
+    Wd.cmp = cmp;
+    T.recordWord(st, cmp.target, cmp.answer);
+    save();
+    Wd.phase = 'reveal';
+    render();
+    say(cmp.ok ? 'Correct' : 'Not quite, it was ' + cmp.target.split('').join(' '));
+    var spoken = Wd.item.kind === 'word' ? cmp.target.toLowerCase() : cmp.target.split('').join(' ');
+    var spoke = st.settings.speak && V.canSpeak;
+    if (spoke) {
+      speakParts(cmp.ok ? [{ clip: 'correct', text: 'Correct.' }] : [{ clip: 'notquite', text: 'Not quite.' }, { text: 'It was ' + spoken + '.' }])
+        .then(function () { if (!cmp.ok && ui.tab === 'words' && Wd.phase === 'reveal') playWord(); });
+    } else if (!cmp.ok) later(playWord, 400);
+    if (cmp.ok) later(nextWord, spoke ? 1500 : 1100);
+  }
+
   /* ---------- voice (hands-free) ---------- */
   var voiceToken = null;
 
   function renderVoice() {
-    var vs = ui.voice, canListen = V.canListen, mode = canListen ? st.settings.voiceMode : 'listen';
+    var vs = ui.voice, canListen = V.canListen, mode = st.settings.voiceMode;
+    if (!canListen && mode === 'quiz') mode = 'learn';
     if (!vs.running) {
       view.innerHTML = '<section class="card center"><h2>Voice</h2>' +
         '<p>Practise hands-free. The app plays a character and tells you by voice what it was.</p>' +
         '<div class="choice" role="radiogroup" aria-label="Voice mode">' +
-        '<label><input type="radio" name="vmode" value="quiz"' + (mode === 'quiz' ? ' checked' : '') + (canListen ? '' : ' disabled') +
-        '><span><strong>Quiz me by voice</strong><br>Say the letter, or its phonetic word such as “Kilo”. The app says whether you were right. Say “repeat”, “skip” or “stop” at any time.</span></label>' +
+        '<label><input type="radio" name="vmode" value="learn"' + (mode === 'learn' ? ' checked' : '') +
+        '><span><strong>Learn the letters</strong> (start here)<br>For each new letter I say its name, then you hear its sound; then the sound first, a pause to think, and the name. Nothing is marked, so you can simply listen and absorb.</span></label>' +
         '<label><input type="radio" name="vmode" value="listen"' + (mode === 'listen' ? ' checked' : '') +
-        '><span><strong>Just listen</strong><br>You hear the sound, a pause to think, then the letter spoken, then the sound again. No answers needed.</span></label></div>' +
+        '><span><strong>Listen and recall</strong><br>Sound, a pause to think of the letter, then the letter spoken, then the sound again. No answers needed.</span></label>' +
+        '<label><input type="radio" name="vmode" value="quiz"' + (mode === 'quiz' ? ' checked' : '') + (canListen ? '' : ' disabled') +
+        '><span><strong>Quiz me by voice</strong><br>Say the letter, or its phonetic word such as “Kilo”. The app says whether you were right. Say “repeat”, “skip” or “stop” at any time.</span></label></div>' +
         (vs.message ? '<p class="notice" role="alert">' + vs.message + '</p>' : '') +
-        (canListen ? '' : '<p class="notice">Voice answers need speech recognition, which this browser does not have. Chrome on Android or on a laptop has it. “Just listen” works here.</p>') +
+        (canListen ? '' : '<p class="notice">Voice answers need speech recognition, which this browser does not have. Chrome on Android or on a laptop has it. Learning and listening work here.</p>') +
         (V.canSpeak ? '' : '<p class="notice">This browser cannot speak. Voice practice needs speech output.</p>') +
         '<button class="btn primary big-btn" id="vstart"' + (V.canSpeak ? '' : ' disabled') + '>Start</button>' +
         '<div class="row"><button class="btn" id="vsettings">Voice settings</button></div>' +
@@ -380,7 +725,7 @@
       document.getElementById('vstart').addEventListener('click', startVoice);
       document.getElementById('vsettings').addEventListener('click', function () { go('settings'); });
     } else {
-      view.innerHTML = '<section class="card center"><p class="label">' + (vs.mode === 'quiz' ? 'Quiz by voice' : 'Just listen') + '</p>' +
+      view.innerHTML = '<section class="card center"><p class="label">' + ({ learn: 'Learn the letters', quiz: 'Quiz by voice', listen: 'Listen and recall' }[vs.mode] || '') + '</p>' +
         '<div class="voice-status" id="vstatus">…</div><div class="voice-heard" id="vheard"></div><div id="vteach"></div>' +
         '<button class="btn primary big-btn" id="vstop">Stop</button></section>';
       document.getElementById('vstop').addEventListener('click', function () { stopVoice(); render(); });
@@ -446,7 +791,8 @@
   function startVoice() {
     audio.unlock();
     keepAwake();
-    var mode = V.canListen ? st.settings.voiceMode : 'listen';
+    var mode = st.settings.voiceMode;
+    if (!V.canListen && mode === 'quiz') mode = 'learn';
     ui.voice = { running: true, mode: mode, last: null, message: '', stoppedByVoice: false };
     var token = voiceToken = { stop: false, waiters: [] };
     render();
@@ -474,18 +820,21 @@
     return head + 'Same characters again.';
   }
 
-  async function introduce(token) {
-    var ch = M.KOCH_ORDER[st.introduced];
-    setStatus('New character');
-    await talk([{ text: 'New character:' }].concat(charParts(ch, '.'), [{ text: 'Listen.' }]));
-    for (var i = 0; i < 4 && !token.stop; i++) {
-      var dur = audio.playChar(ch);
-      await wait((dur + 1.2) * 1000, token);
-    }
+  /** Hands-free study: name each new letter, then its sound, then recall rounds. Never a test. */
+  async function voiceStudy(token, loop) {
+    var plan = STU.plan(st);
+    var steps = STU.session({ target: plan.target, known: plan.known });
+    setStatus(STU.describe(plan));
+    setHeard('');
+    await talk(plan.fresh
+      ? 'New letters: ' + plan.target.map(sayCh).join(' and ') + '. First I will name each one, then you hear its sound.'
+      : 'Review: ' + plan.target.map(sayCh).join(' and ') + '.');
+    await runStudy(steps, token, { step: function (s) {
+      setStatus(s.t === 'pause' && s.show === false ? 'Think…' : s.t === 'tone' && !s.show ? 'Listen…' : s.ch);
+    } });
     if (token.stop) return;
-    await talk([{ text: 'That was' }].concat(charParts(ch, '.')));
-    st.introduced++;
-    save();
+    markStudied(plan);
+    await talk(loop ? 'Again.' : 'That is all for the new letters.');
   }
 
   async function fatal(token, text) {
@@ -508,10 +857,10 @@
       var r = await V.listen(7000, st.settings.recogLang);
       if (token.stop) return;
       if (r.error === 'not-allowed' || r.error === 'service-not-allowed') {
-        return fatal(token, 'The microphone is blocked. Allow it for this site in Chrome settings, or use Just listen.');
+        return fatal(token, 'The microphone is blocked. Allow it for this site in Chrome settings, or use Learn or Listen and recall.');
       }
       if (r.error === 'network') {
-        return fatal(token, 'Voice answers need an internet connection. Use Just listen to practise offline.');
+        return fatal(token, 'Voice answers need an internet connection. Use Learn or Listen and recall to practise offline.');
       }
       setHeard(r.alts[0] ? 'Heard: ' + r.alts[0] : '');
       var p = VP.parse(r.alts, unlocked, st.aliases);
@@ -530,7 +879,7 @@
       if (p.type === 'repeat') { await playAndWait(ch, token); continue; }
       var skipped = p.type === 'skip';
       var ok = !skipped && p.ch === ch;
-      var res = T.record(st, 'listen', ch, ok);
+      var res = T.record(st, 'listen', ch, ok, { answered: skipped ? null : p.ch });
       save();
       setStatus(ok ? '✓ Correct' : '✕ It was ' + ch);
       if (!ok && !skipped && r.alts[0]) setTeach(r.alts[0], ch);
@@ -559,11 +908,14 @@
   }
 
   async function runVoice(mode, token) {
-    await talk(mode === 'quiz'
-      ? 'Voice practice. After each sound, say the letter. Say repeat, skip or stop.'
-      : 'Just listen. You will hear a sound, then the letter, then the sound again.');
+    await talk(mode === 'learn'
+      ? 'Learn the letters. I will name each letter, then play its sound. Nothing is marked.'
+      : mode === 'quiz'
+        ? 'Voice practice. After each sound, say the letter. Say repeat, skip or stop.'
+        : 'Listen and recall. You will hear a sound, then the letter, then the sound again.');
     while (!token.stop) {
-      if (st.introduced < st.level) await introduce(token);
+      if (mode === 'learn') await voiceStudy(token, true);
+      else if (st.introduced < st.level) await voiceStudy(token, false);   // new letters are studied before any question
       else if (mode === 'quiz') await quizTrial(token);
       else await listenTrial(token);
       if (!token.stop) await wait(600, token);
@@ -572,32 +924,57 @@
   }
 
   /* ---------- progress ---------- */
+  var STATUS_NOTE = { New: 'not met yet', Learning: 'practising', Learned: 'meets the criteria', Solid: 'held up after two weeks' };
+
   function renderProgress() {
+    var s = st.settings;
+    var counts = T.countByStatus(st);
+    var rows = T.unlocked(st).map(function (c) {
+      var x = T.charStatus(st, c);
+      return '<tr><th scope="row">' + c + '</th><td class="st-' + x.status.toLowerCase() + '">' + x.status + '</td><td>' + pct(x.acc) + '</td><td>' +
+        (x.medianMs == null ? '–' : (x.medianMs / 1000).toFixed(1) + ' s') + '</td><td>' + x.days + '</td></tr>';
+    }).join('');
+    var needs = T.unlocked(st).map(function (c) { return { c: c, s: T.charStatus(st, c) }; })
+      .filter(function (x) { return x.s.status === 'Learning' && x.s.n > 0; })
+      .slice(0, 4).map(function (x) { return '<li><strong>' + x.c + '</strong> needs ' + x.s.need.join('; ') + '</li>'; }).join('');
+    var pairs = T.topPairs(st, 5).map(function (p) { return p.a + '/' + p.b + ' ×' + p.count; }).join(' · ');
     var chips = M.KOCH_ORDER.map(function (c, i) {
       var state = i < st.level - 1 ? 'mastered' : i === st.level - 1 ? 'current' : 'locked';
-      var label = c + ', ' + (state === 'locked' ? 'not yet unlocked' : state === 'current' ? 'newest character' : 'mastered');
+      var label = c + ', ' + (state === 'locked' ? 'not yet unlocked' : state === 'current' ? 'newest character' : 'unlocked');
       return '<span class="chip ' + state + '" aria-label="' + label + '">' + c + '</span>';
     }).join('');
-    var weak = Object.keys(st.chars.listen).map(function (c) {
-      var x = st.chars.listen[c];
-      return { c: c, n: x.n, acc: x.ok / x.n };
-    }).filter(function (x) { return x.n >= 3 && x.acc < 1; })
-      .sort(function (a, b) { return a.acc - b.acc; }).slice(0, 5)
-      .map(function (x) { return x.c + ' ' + pct(x.acc); }).join(' · ') || '–';
-    var s = st.settings;
+    var allLearned = M.KOCH_ORDER.filter(function (c) { var q = T.charStatus(st, c).status; return q === 'Learned' || q === 'Solid'; }).length;
+    var wAcc = T.accuracy(st.words.recent);
+    var lvl1 = allLearned === M.KOCH_ORDER.length && s.effWpm >= 12;
+    var lvl2 = st.words.recent.length >= T.WINDOW && wAcc >= 0.95 && s.effWpm >= 15;
+    function tick(ok) { return ok ? '✓ ' : '○ '; }
     view.innerHTML = '<section class="card"><h2>Progress</h2>' +
+      '<p class="readout">Solid ' + counts.Solid + ' · Learned ' + counts.Learned + ' · Learning ' + counts.Learning + ' · New ' + counts.New +
+      ' (of ' + st.level + ' unlocked)</p>' +
       '<p class="label">Koch order</p><div class="ladder">' + chips + '</div>' +
+      '<p class="label">Each letter against the criteria</p>' +
+      '<table class="mastery"><thead><tr><th scope="col">Letter</th><th scope="col">Status</th><th scope="col">Last 20</th><th scope="col">Typical time</th><th scope="col">Days</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '<p class="hint">Learned means: at least 95% of the last 20 answers right, typical answer under 1.5 s after the sound ends, on at least 3 different days. Solid means it still holds two weeks later.</p>' +
+      (needs ? '<p class="label">What each shaky letter still needs</p><ul class="needs">' + needs + '</ul>' : '') +
+      '<p class="label">Letters you mix up</p><p>' + (pairs || 'No pattern yet.') + '</p>' +
+      (pairs ? '<div class="row"><button class="btn" id="drill">Drill my weak spots</button></div>' : '') +
+      '<p class="label">Your levels</p><ul class="needs">' +
+      '<li>' + tick(lvl1) + '<strong>1. Foundation:</strong> all 40 characters learned, at 12 WPM effective or faster (' + allLearned + ' of 40 learned; now ' + s.effWpm + ' WPM)</li>' +
+      '<li>' + tick(lvl2) + '<strong>2. Fluent:</strong> whole words at 15 WPM effective, 95% right over the last 20 (words: ' + pct(wAcc) + '; now ' + s.effWpm + ' WPM)</li>' +
+      '<li>○ <strong>3. Proficient:</strong> 20 WPM plain text with noise, and sending at 15 WPM (practice for this comes in a later update)</li>' +
+      '<li>○ <strong>4. Teacher:</strong> run a short lesson with your children (family profiles come in a later update)</li></ul>' +
       '<dl class="stats">' +
-      '<dt>Level</dt><dd>' + st.level + ' of ' + M.KOCH_ORDER.length + '</dd>' +
       '<dt>Listening accuracy (last 50)</dt><dd>' + pct(T.accuracy(st.recent.listen)) + '</dd>' +
       '<dt>Sending accuracy (last 50)</dt><dd>' + pct(T.accuracy(st.recent.send)) + '</dd>' +
       '<dt>Speed (character / effective)</dt><dd>' + s.charWpm + ' / ' + s.effWpm + ' WPM</dd>' +
-      '<dt>Weakest by ear</dt><dd>' + weak + '</dd></dl>' +
-      '<p class="hint">At 90% over 50 characters the next character unlocks. Below 70% the newest one steps back.</p></section>';
+      '<dt>Practised today / 7 days</dt><dd>' + Math.floor(T.minutesOn(st)) + ' / ' + Math.round(T.minutesLastDays(st, 7)) + ' min</dd></dl>' +
+      '<p class="hint">The next letter unlocks when a block of 50 answers is 90% right. Below 70% the newest one steps back.</p></section>';
+    var d = document.getElementById('drill');
+    if (d) d.addEventListener('click', function () { ui.listen.focus = 'weak'; go('listen'); startListen(); });
   }
 
   /* ---------- settings ---------- */
-  var UNITS = { pitch: ' Hz', charWpm: ' WPM', effWpm: ' WPM', sendWpm: ' WPM', thinkSec: ' s' };
+  var UNITS = { pitch: ' Hz', charWpm: ' WPM', effWpm: ' WPM', sendWpm: ' WPM', thinkSec: ' s', goalMin: ' min' };
   function fmt(k, v) {
     if (k === 'volume' || k === 'speechVolume') return Math.round(v * 100) + '%';
     if (k === 'speechRate' || k === 'speechPitch') return Number(v).toFixed(1) + '×';
@@ -680,6 +1057,7 @@
       range('sendWpm', 'Sending speed (your keying)', 5, 20, 1, s.sendWpm) +
       check('echo', 'Echo mode: hear the character, letter hidden, send it back', s.echo) +
       range('volume', 'Tone volume', 0.1, 1, 0.05, s.volume) +
+      range('goalMin', 'Daily practice goal', 10, 90, 5, s.goalMin) +
       '<div class="row"><button type="button" class="btn" id="test">Play test tone</button>' +
       '<button type="button" class="btn danger" id="reset">Reset progress</button></div></form></section>' +
 
@@ -710,14 +1088,27 @@
         : '<p class="notice">Recording needs a browser that can use the microphone and store files, such as Chrome.</p>') +
       '</section>' +
 
+      '<section class="card"><h2>Audio tracks</h2>' +
+      '<p>Make a practice recording to play with the screen off, in any music app or over the car stereo. It uses your own recorded voice, so record the letters first.</p>' +
+      '<div class="field"><label for="trackkind">Track</label><select id="trackkind"><option value="learn">' + TR.KINDS.learn + '</option><option value="review">' + TR.KINDS.review + '</option></select></div>' +
+      '<div class="field"><label for="tracklen">Length</label><select id="tracklen"><option value="5">5 minutes</option><option value="10" selected>10 minutes</option><option value="15">15 minutes</option></select></div>' +
+      '<p class="notice" id="trackneed" hidden></p>' +
+      '<div class="row"><button type="button" class="btn primary" id="maketrack">Make track</button></div>' +
+      '<p class="hint" id="trackmsg" role="status"></p><div id="trackout"></div></section>' +
+
       '<section class="card"><h2>Voice calibration</h2>' +
       '<p>Teach the app how the speech recogniser hears <em>you</em>. You say each letter you have unlocked once, and then its phonetic word, and the app remembers any way it mishears you.</p>' +
       '<p class="readout" id="aliascount">' + Object.keys(st.aliases).length + ' learned word' + (Object.keys(st.aliases).length === 1 ? '' : 's') + '</p>' +
       '<div class="row"><button type="button" class="btn primary" id="calbtn"' + (V.canListen ? '' : ' disabled') + '>Calibrate my voice</button>' +
       '<button type="button" class="btn danger" id="clearaliases"' + (Object.keys(st.aliases).length ? '' : ' disabled') + '>Clear learned words</button></div>' +
-      (V.canListen ? '' : '<p class="notice">Speech recognition is not available in this browser.</p>') + '</section>';
+      (V.canListen ? '' : '<p class="notice">Speech recognition is not available in this browser.</p>') + '</section>' +
 
-    bindRanges(['pitch', 'charWpm', 'effWpm', 'sendWpm', 'volume', 'speechRate', 'speechPitch', 'speechVolume', 'thinkSec']);
+      '<section class="card"><h2>Progress backup</h2>' +
+      '<p>Your progress lives only in this browser. Save a backup now and then, and use it to move to another device. Your recorded voice has its own backup above.</p>' +
+      '<div class="row"><button type="button" class="btn primary" id="savebackup">Save a backup</button><button type="button" class="btn" id="restorebackup">Restore a backup</button></div>' +
+      '<input type="file" id="restorefile" accept="application/json,.json" class="sr"><p class="hint" id="backupmsg" role="status"></p></section>';
+
+    bindRanges(['pitch', 'charWpm', 'effWpm', 'sendWpm', 'volume', 'goalMin', 'speechRate', 'speechPitch', 'speechVolume', 'thinkSec']);
     bindChecks(['auto', 'echo', 'speak', 'phonetic']);
     document.getElementById('test').addEventListener('click', function () { audio.unlock(); audio.playChar('K'); });
     document.getElementById('reset').addEventListener('click', function () {
@@ -781,6 +1172,87 @@
     });
     document.getElementById('clearaliases').addEventListener('click', function () {
       if (window.confirm('Forget all learned words?')) { st.aliases = {}; save(); render(); }
+    });
+    bindTracks();
+    bindBackup();
+  }
+
+  /* ---------- audio tracks ---------- */
+  var trackUrl = null;
+
+  function bindTracks() {
+    var kind = document.getElementById('trackkind'), btn = document.getElementById('maketrack'), need = document.getElementById('trackneed');
+    var OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    function refresh() {
+      var miss = TR.missing(TR.charsFor(kind.value, st), C.has);
+      var problem = !C.supported || !OAC ? 'This browser cannot record or render audio.'
+        : miss.length ? 'Record your voice saying these letters first: ' + miss.join(', ') + '. (Settings → My own voice → Record my voice.)' : '';
+      need.hidden = !problem;
+      need.textContent = problem;
+      btn.disabled = !!problem;
+    }
+    kind.addEventListener('change', refresh);
+    refresh();
+    btn.addEventListener('click', function () {
+      var msg = document.getElementById('trackmsg'), out = document.getElementById('trackout');
+      var minutes = Number(document.getElementById('tracklen').value);
+      audio.unlock();
+      btn.disabled = true;
+      out.textContent = '';
+      msg.textContent = 'Making the track… 0%';
+      TR.render(kind.value, st, minutes, Math.random, {
+        OfflineAudioContext: OAC,
+        has: C.has,
+        getBuffer: function (id) { return C.decode(audio.context(), id); },
+        settings: st.settings,
+        encodeWav: window.AudioEdit.encodeWav,
+        progress: function (x) { msg.textContent = 'Making the track… ' + Math.round(x * 100) + '%'; }
+      }).then(function (res) {
+        var blob = new Blob([res.wav], { type: 'audio/wav' });
+        if (trackUrl) URL.revokeObjectURL(trackUrl);
+        trackUrl = URL.createObjectURL(blob);
+        msg.textContent = 'Ready: ' + Math.round(res.seconds / 60 * 10) / 10 + ' minutes, ' + (blob.size / 1048576).toFixed(1) + ' MB.';
+        var audioEl = document.createElement('audio');
+        audioEl.controls = true;
+        audioEl.src = trackUrl;
+        var a = document.createElement('a');
+        a.className = 'btn';
+        a.href = trackUrl;
+        a.download = 'morse-ear-trainer-' + kind.value + '-' + minutes + 'min.wav';
+        a.textContent = 'Save the track';
+        out.appendChild(audioEl);
+        out.appendChild(a);
+      }).catch(function (err) {
+        if (window.console) console.warn('Track failed', err);
+        msg.textContent = 'Could not make the track on this device.';
+      })
+        .then(function () { btn.disabled = false; });
+    });
+  }
+
+  /* ---------- progress backup ---------- */
+  function bindBackup() {
+    var msg = document.getElementById('backupmsg');
+    document.getElementById('savebackup').addEventListener('click', function () {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([T.exportJson(st)], { type: 'application/json' }));
+      a.download = 'morse-ear-trainer-progress-' + T.today() + '.json';
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+      msg.textContent = 'Backup saved to your downloads.';
+    });
+    document.getElementById('restorebackup').addEventListener('click', function () { document.getElementById('restorefile').click(); });
+    document.getElementById('restorefile').addEventListener('change', function (e) {
+      var f = e.target.files[0];
+      if (!f) return;
+      f.text().then(function (text) {
+        var next = T.importJson(text);
+        if (!window.confirm('Replace your current progress with this backup?')) return;
+        st = next;
+        save();
+        msg.textContent = 'Restored.';
+        render();
+      }).catch(function (err) { msg.textContent = err.message || 'Could not restore that file.'; });
     });
   }
 
@@ -1006,6 +1478,8 @@
         e.preventDefault();
         afterIntro();
       }
+    } else if (ui.tab === 'words') {
+      if (ui.words.phase === 'reveal' && e.key === 'Enter') { e.preventDefault(); nextWord(); }
     } else if (ui.tab === 'send') {
       if (e.key === ' ' && ui.send.phase === 'prompt') { e.preventDefault(); if (!e.repeat) keyOn(); }
       else if (e.key === 'Enter' && ui.send.phase === 'reveal') { e.preventDefault(); nextSend(); }

@@ -15,12 +15,19 @@
   <header class="top">
     <h1>Morse Ear Trainer</h1>
     <nav class="tabs" role="tablist" aria-label="Sections">
-      <button role="tab" data-tab="listen">Listen</button>
-      <button role="tab" data-tab="send">Send</button>
+      <button role="tab" data-tab="today">Today</button>
+      <button role="tab" data-tab="practice">Practice</button>
       <button role="tab" data-tab="voice">Voice</button>
       <button role="tab" data-tab="progress">Progress</button>
       <button role="tab" data-tab="settings">Settings</button>
     </nav>
+    <nav class="tabs sub" id="subtabs" role="tablist" aria-label="Practice modes" hidden>
+      <button role="tab" data-tab="learn">Learn</button>
+      <button role="tab" data-tab="listen">Listen</button>
+      <button role="tab" data-tab="words">Words</button>
+      <button role="tab" data-tab="send">Send</button>
+    </nav>
+    <div id="sessionbar" class="sessionbar" hidden></div>
   </header>
   <main id="view" tabindex="-1"></main>
   <div id="live" class="sr" aria-live="polite" role="status"></div>
@@ -28,10 +35,13 @@
   <script src="js/morse.js"></script>
   <script src="js/trainer.js"></script>
   <script src="js/audio.js"></script>
+  <script src="js/study.js"></script>
+  <script src="js/words.js"></script>
   <script src="js/voiceparse.js"></script>
   <script src="js/voice.js"></script>
   <script src="js/audioedit.js"></script>
   <script src="js/clips.js"></script>
+  <script src="js/tracks.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

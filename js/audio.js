@@ -30,20 +30,19 @@
   /** The shared audio context (after unlock), for playing recorded clips. */
   MorseAudio.prototype.context = function () { return this.unlock() ? this.ctx : null; };
 
-  /** Play one character now (+delay). Returns its duration in seconds. */
-  MorseAudio.prototype.playChar = function (ch, delay) {
-    if (!this.unlock()) return 0;
-    var s = this.getSettings();
+  /**
+   * Schedule one character's tone on any context (live or offline), starting at t0 seconds.
+   * Returns the character's length in seconds. Raised-cosine attack and release on every element.
+   */
+  MorseAudio.scheduleChar = function (ctx, destination, ch, t0, s) {
     var t = root.Morse.timing(s.charWpm, s.effWpm);
     var seg = root.Morse.segments(ch, t);
-    var ctx = this.ctx;
-    var t0 = ctx.currentTime + (delay || 0.05);
     var osc = ctx.createOscillator();
     var gain = ctx.createGain();
     osc.type = 'sine';
     osc.frequency.value = s.pitch;
     gain.gain.value = 0;
-    osc.connect(gain).connect(ctx.destination);
+    osc.connect(gain).connect(destination);
     var vol = s.volume;
     seg.segments.forEach(function (e) {
       var start = t0 + e.start, end = start + e.dur;
@@ -51,9 +50,35 @@
       gain.gain.setValueAtTime(vol, start + ENV);
       gain.gain.setValueCurveAtTime(RELEASE.map(function (v) { return v * vol; }), end - ENV, ENV);
     });
-    osc.start(t0 - 0.01);
+    osc.start(Math.max(0, t0 - 0.01));
     osc.stop(t0 + seg.duration + 0.05);
-    return seg.duration + (delay || 0.05);
+    return seg.duration;
+  };
+
+  /** Play one character now (+delay). Returns its duration in seconds. */
+  MorseAudio.prototype.playChar = function (ch, delay) {
+    if (!this.unlock()) return 0;
+    var d = delay == null ? 0.05 : delay;
+    var len = MorseAudio.scheduleChar(this.ctx, this.ctx.destination, ch, this.ctx.currentTime + d, this.getSettings());
+    return len + d;
+  };
+
+  /**
+   * Play a run of characters as one word: each at character speed, with the Farnsworth gap between them.
+   * Returns the total length in seconds (including the start delay).
+   */
+  MorseAudio.prototype.playText = function (text, delay) {
+    if (!this.unlock()) return 0;
+    var s = this.getSettings();
+    var t = root.Morse.timing(s.charWpm, s.effWpm);
+    var d = delay == null ? 0.1 : delay;
+    var at = this.ctx.currentTime + d;
+    for (var i = 0; i < text.length; i++) {
+      if (!root.Morse.TABLE[text.charAt(i)]) continue;
+      var len = MorseAudio.scheduleChar(this.ctx, this.ctx.destination, text.charAt(i), at, s);
+      at += len + t.charGap;
+    }
+    return at - t.charGap - this.ctx.currentTime;
   };
 
   /** Side tone while a key is held. */
