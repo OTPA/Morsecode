@@ -29,12 +29,15 @@
       mastery: {},           // per character: {res:[0|1], ms:[answer ms], days:[dates], learnedOn, solidOn}
       confusions: {},        // "K>M" -> times K was answered as M
       words: { recent: [], n: 0, ok: 0 },
+      checks: [],            // weekly checks: {date, kind, score, pass, n, ...}
+      levelDate: null,       // when the Koch level last changed
       customWords: [],
       log: {},               // date -> seconds practised
       aliases: {},           // how recognition hears this learner: heard phrase -> character
       settings: { pitch: 650, charWpm: 20, effWpm: 10, auto: true, sendWpm: 10, echo: false, volume: 0.6,
         speak: true, phonetic: true, speechRate: 1, thinkSec: 3, voiceMode: 'learn',
-        voiceURI: '', speechPitch: 1, speechVolume: 1, recogLang: 'en-US', ownVoice: false, goalMin: 40 }
+        voiceURI: '', speechPitch: 1, speechVolume: 1, recogLang: 'en-US', ownVoice: false, goalMin: 40,
+        conditions: 'clean', hamPack: false, prosigns: false }
     };
   }
 
@@ -276,24 +279,26 @@
         st.weights.listen[Morse.KOCH_ORDER[st.level - 1]] = 3;
       }
       if (s.auto && s.effWpm < s.charWpm) s.effWpm = Math.min(s.charWpm, s.effWpm + 1);
+      st.levelDate = opts.date || today();
       return { event: 'advance', accuracy: acc, newChar: Morse.KOCH_ORDER[st.level - 1] };
     }
     if (acc < FALL_BACK && st.level > 2) {
       st.level--;
       st.introduced = Math.min(st.introduced, st.level);
+      st.levelDate = opts.date || today();
       return { event: 'regress', accuracy: acc };
     }
     return { event: 'stay', accuracy: acc };
   }
 
   /** Record a whole-word trial (Words mode). Letter-level results are kept only when the answer has the same length. */
-  function recordWord(st, target, answer, date) {
+  function recordWord(st, target, answer, date, wordOnly) {
     var ok = target === answer;
     st.words.n++;
     if (ok) st.words.ok++;
     st.words.recent.push(ok);
     if (st.words.recent.length > WINDOW) st.words.recent.shift();
-    if (target.length === answer.length) {
+    if (!wordOnly && target.length === answer.length) {
       for (var i = 0; i < target.length; i++) {
         if (Morse.TABLE[target.charAt(i)]) {
           record(st, 'listen', target.charAt(i), target.charAt(i) === answer.charAt(i),

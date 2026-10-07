@@ -1,6 +1,6 @@
-const CACHE = 'morse-ear-v4';
+const CACHE = 'morse-ear-v5';
 const SHELL = [
-  './', 'index.html', 'css/app.css', 'js/morse.js', 'js/trainer.js', 'js/audio.js', 'js/study.js', 'js/words.js', 'js/voiceparse.js', 'js/voice.js', 'js/audioedit.js', 'js/clips.js', 'js/tracks.js', 'js/app.js',
+  './', 'index.html', 'css/app.css', 'js/morse.js', 'js/trainer.js', 'js/audio.js', 'js/study.js', 'js/words.js', 'js/checks.js', 'js/coach.js', 'js/voiceparse.js', 'js/voice.js', 'js/audioedit.js', 'js/clips.js', 'js/tracks.js', 'js/app.js',
   'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png'
 ];
 

@@ -30,30 +30,55 @@ It becomes **Solid** when it still passes a review at least two weeks after it w
 shows each letter against these criteria and what it still needs. Voice answers have no reliable timing, so only
 tapped or typed answers count towards the speed criterion.
 
-Levels: **1 Foundation** (all 40 learned, 12 WPM effective), **2 Fluent** (whole words at 15 WPM effective, 95% over
-the last 20), **3 Proficient** (20 WPM plain text with noise; sending at 15 WPM), **4 Teacher** (lead a short lesson with
-children). Levels 3 and 4 need features that come in later phases.
+### Levels, decided by weekly checks
+
+Four short checks, each with no feedback until the end and a 95% pass mark. Nothing in a check changes your unlocked
+letters, mastery or mix-up records; they only award levels.
+
+| Check | What it is | Counts towards |
+|---|---|---|
+| **Letters** | 40 letters at your current speed; typical answer under 1.5 s | a snapshot only |
+| **Words** | 20 words at 20 WPM, 15 WPM effective, copied exactly | Level 2 |
+| **Text** | 20 three-word phrases at 20 WPM with light noise; 95% of characters | Level 3 |
+| **Sending** | 20 characters keyed at 15 WPM, each decoded exactly | Level 3 |
+
+- **1 Foundation**: all 40 characters Learned, at 12 WPM effective or faster.
+- **2 Fluent**: Foundation, and a Words check passed in the last 45 days.
+- **3 Proficient**: Fluent, and a Text check and a Sending check both passed in the last 45 days.
+- **4 Teacher**: lead a short lesson with your children (family profiles come in a later update).
+
+The app suggests a check about once a week once ten letters are unlocked.
 
 ## Screens
 
 - **Today**: the daily plan, scaled to your goal (default 40 minutes): study new letters, warm-up review of learned
   letters, weak-spot drill, send, words, and a listen-only cool-down. A timer shows the current block; nothing is forced.
-  Practice minutes are counted automatically.
+  Practice minutes are counted automatically. Up to two plain coaching notes appear above the plan: welcome-back after a
+  gap, advice for a letter that keeps failing, a plateau note, a due check, and "goal done, rest helps memory".
 - **Practice**, with four modes:
   - **Learn**: the study sequence above, on screen, with the name spoken.
   - **Listen**: the quiz. About one question in five reviews an older letter. Wrong answers are recorded as mix-ups.
   - **Words**: listen to a whole word (or, early on, a short letter group), then type it. Uses only unlocked letters;
-    add your own words, such as names.
+    add your own words, such as names. Optional packs: **ham abbreviations and Q-codes** (CQ, QTH, 73, 599 …) and
+    **prosigns** (AR, SK, BT, KN, AS), each sent as one run-together sound; a prosign never credits or blames its letters.
   - **Send**: key letters yourself and hear your own tone; the app decodes your timing. Echo mode hides the letter.
 - **Voice** (hands-free, with the screen on):
   - **Learn the letters**: the study sequence, spoken and played, no microphone, no test. Start here.
   - **Listen and recall**: sound, pause, spoken letter, sound again.
   - **Quiz me by voice**: say the letter (or its phonetic word, e.g. "Kilo"); the app says "Correct" or "Not quite, it
     was K, Kilo" and replays the sound. Say "repeat", "skip" or "stop". Unstudied letters are always studied first.
-- **Progress**: letters against the criteria, what each shaky letter needs, mix-ups (with a drill button), levels, time practised.
-- **Settings**: tone and speeds, daily goal, voice (device voice picker, speed, pitch, volume, accent for recognition),
+- **Progress**: letters against the criteria, what each shaky letter needs, mix-ups (with a drill button), the four weekly
+  checks, your levels and what each still needs, time practised.
+- **Settings**: tone and speeds, daily goal, **practice conditions**, voice (device voice picker, speed, pitch, volume, accent for recognition),
   **My own voice** (record your own "Correct", "Not quite", letter names, phonetic words), **Voice calibration**
   (teach the app how it mishears you), **Audio tracks**, **Progress backup**.
+
+### Practice conditions
+
+Settings → Practice conditions makes Listen, Words and the sound in Send less like a clean computer tone: **Light**,
+**Realistic** or **Hard** add band-limited noise (18, 10 and 4 dB below the tone, measured), random fading, a wandering
+pitch, and the uneven timing of a human hand. Learn, Voice and audio tracks always stay clean. The Text check always uses
+Light conditions, whatever you have chosen.
 
 ### Audio tracks (screen-off practice)
 
@@ -90,12 +115,14 @@ node --test tests/*.test.js     # unit tests: timing, mastery, study order, word
 ```
 index.html  manifest.webmanifest  sw.js
 css/app.css            design tokens and screens
-js/morse.js            table, Koch order, Farnsworth timing, keying decode (pure)
+js/morse.js            table, prosigns, Koch order, Farnsworth timing, practice conditions, keying decode (pure)
 js/trainer.js          level, mastery criteria, mix-ups, weighted picking, blocks, time log, backup (pure)
 js/study.js            the study sequences: name, sound, recall (pure)
-js/words.js            word list, word and group picking, answer comparison (pure)
+js/words.js            word list, ham pack, prosigns, word and group picking, answer comparison (pure)
+js/checks.js           the four weekly checks, scoring, levels, when a check is due (pure)
+js/coach.js            plain coaching notes for the Today screen (pure)
 js/tracks.js           audio-track planning and offline rendering
-js/audio.js            Web Audio: scheduled characters and words, live side tone
+js/audio.js            Web Audio: scheduled characters, words and prosigns with noise and fading; live side tone
 js/voiceparse.js       what you said -> character or command; what to say back (pure)
 js/voice.js            browser speech synthesis and recognition
 js/audioedit.js        trim, level, resample and WAV-encode a recorded clip (pure)

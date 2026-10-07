@@ -155,3 +155,65 @@ test('saved data from before new settings existed still loads with defaults fill
   assert.equal(st.settings.ownVoice, false);
   assert.deepEqual(st.aliases, {});
 });
+
+test('prosigns are run-together characters with their own sounds', () => {
+  const t = Morse.timing(20, 20);
+  assert.deepEqual(Object.keys(Morse.PROSIGNS), ['AR', 'SK', 'BT', 'KN', 'AS']);
+  // AR is A and R sent with no gap between them: .- + .-. = .-.-.
+  assert.equal(Morse.PROSIGNS.AR, Morse.TABLE.A + Morse.TABLE.R);
+  assert.equal(Morse.PROSIGNS.SK, Morse.TABLE.S + Morse.TABLE.K);
+  assert.equal(Morse.PROSIGNS.AS, Morse.TABLE.A + Morse.TABLE.S);
+  assert.equal(Morse.PROSIGNS.KN, Morse.TABLE.K + Morse.TABLE.N);
+  assert.equal(Morse.PROSIGNS.BT, '-...-');
+  const seg = Morse.prosignSegments('ar', t);
+  assert.equal(seg.segments.length, 5);
+  assert.ok(Math.abs(seg.duration - (2 * t.dah + 3 * t.dit + 4 * t.gap)) < 1e-9);
+  assert.equal(Morse.prosignSegments('XX', t).segments.length, 0);
+});
+
+test('conditions: presets get progressively harder, and clean changes nothing', () => {
+  const C = Morse.CONDITIONS;
+  assert.deepEqual(Object.keys(C), ['clean', 'light', 'real', 'hard']);
+  assert.equal(C.clean.snr, null);
+  ['light', 'real', 'hard'].reduce((prev, k) => {
+    assert.ok(C[k].snr < prev.snr || prev.snr === null, k + ' is noisier');
+    assert.ok(C[k].fade >= (prev.fade || 0) && C[k].swing >= (prev.swing || 0) && C[k].pitchSpread >= (prev.pitchSpread || 0));
+    return C[k];
+  }, C.clean);
+  const t = Morse.timing(20, 20), seg = Morse.segments('K', t);
+  assert.equal(Morse.humanize(seg, C.clean, Math.random), seg);
+  assert.deepEqual(Morse.toneVariation(C.clean, () => 0.9), { gain: 1, pitch: 0, drift: 0 });
+  assert.deepEqual(Morse.toneVariation(null), { gain: 1, pitch: 0, drift: 0 });
+});
+
+test('humanize: element lengths vary within the swing, order is kept and nothing overlaps', () => {
+  const t = Morse.timing(20, 20), seg = Morse.segments('Q', t); // dah dah dit dah
+  let seed = 5; const rng = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  const cond = { swing: 0.2 };
+  let differs = false;
+  for (let n = 0; n < 200; n++) {
+    const h = Morse.humanize(seg, cond, rng);
+    assert.equal(h.segments.length, seg.segments.length);
+    h.segments.forEach((e, i) => {
+      const base = seg.segments[i].dur;
+      assert.ok(e.dur >= base * 0.8 - 1e-9 && e.dur <= base * 1.2 + 1e-9);
+      if (i > 0) assert.ok(e.start >= h.segments[i - 1].start + h.segments[i - 1].dur - 1e-9, 'no overlap');
+      if (Math.abs(e.dur - base) > 1e-6) differs = true;
+    });
+    const last = h.segments[h.segments.length - 1];
+    assert.ok(Math.abs(h.duration - (last.start + last.dur)) < 1e-9);
+  }
+  assert.ok(differs);
+  // a dah must still be recognisably longer than a dit even at the hardest swing
+  const hard = Morse.humanize(Morse.segments('K', t), { swing: 0.3 }, () => 1); // dah up, dit up
+  assert.ok(hard.segments[0].dur > 2 * t.dit);
+});
+
+test('toneVariation stays inside the preset limits', () => {
+  const c = Morse.CONDITIONS.hard;
+  for (const r of [0, 0.5, 0.999]) {
+    const v = Morse.toneVariation(c, () => r);
+    assert.ok(v.gain >= 1 - c.fade - 1e-9 && v.gain <= 1);
+    assert.ok(Math.abs(v.pitch) <= c.pitchSpread + 1e-9 && Math.abs(v.drift) <= c.jitter + 1e-9);
+  }
+});

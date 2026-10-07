@@ -41,15 +41,20 @@
     });
   })();
 
+  // Everyday amateur-radio abbreviations and Q-codes. Optional: they are not general English.
+  var HAM = ('CQ DE QTH QRM QRN QRP QRS QRT QRX QRZ QSB QSL QSO QSY 73 88 599 RST PSE TNX TKS AGN ANT RIG PWR WX FB GM GA GE GN OM YL XYL UR ES HW CPY BK CUL DX HR NR NW OP RPT SIG SRI TU TX VY WKD TEMP').split(' ');
+  var PROSIGN_NAMES = Object.keys(Morse.PROSIGNS);
+
   function usable(word, allowed) {
     for (var i = 0; i < word.length; i++) if (allowed.indexOf(word.charAt(i)) < 0) return false;
     return true;
   }
 
   /** Words (built-in plus the learner's own) that use only `allowed` characters. */
-  function matching(allowed, custom) {
+  function matching(allowed, custom, opts) {
     var extra = (custom || []).map(function (w) { return String(w).toUpperCase().replace(/[^A-Z0-9]/g, ''); }).filter(Boolean);
-    var out = UNIQUE.concat(extra).filter(function (w) { return usable(w, allowed); });
+    var ham = opts && opts.ham ? HAM : [];
+    var out = UNIQUE.concat(ham, extra).filter(function (w) { return usable(w, allowed); });
     return out.filter(function (w, i) { return out.indexOf(w) === i; });
   }
 
@@ -72,9 +77,14 @@
    * Next thing to copy. Returns {text, kind: 'word' | 'group'}.
    * Uses real words when there are enough; otherwise 4-letter groups, so early practice still works.
    */
-  function next(allowed, rng, last, custom) {
+  function next(allowed, rng, last, custom, opts) {
     rng = rng || Math.random;
-    var list = matching(allowed, custom);
+    opts = opts || {};
+    if (opts.prosigns && rng() < 0.2) {
+      var signs = PROSIGN_NAMES.filter(function (n) { return usable(n, allowed) && n !== last; });
+      if (signs.length) return { text: signs[Math.floor(rng() * signs.length) % signs.length], kind: 'prosign' };
+    }
+    var list = matching(allowed, custom, opts);
     if (list.length >= MIN_WORDS) {
       var pool = list.filter(function (w) { return w !== last; });
       return { text: pool[Math.floor(rng() * pool.length)], kind: 'word' };
@@ -97,6 +107,6 @@
     return { ok: target === answer && target.length > 0, target: target, answer: answer, letters: letters };
   }
 
-  return { LIST: UNIQUE, MIN_WORDS: MIN_WORDS, matching: matching, group: group, next: next, compare: compare, clean: clean,
+  return { LIST: UNIQUE, HAM: HAM, PROSIGNS: PROSIGN_NAMES, MIN_WORDS: MIN_WORDS, matching: matching, group: group, next: next, compare: compare, clean: clean,
     usable: usable };
 });

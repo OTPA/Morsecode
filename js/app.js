@@ -3,7 +3,7 @@
 
   function storage() { try { return window.localStorage; } catch (e) { return null; } }
   var st = T.load(storage());
-  var audio = new window.MorseAudio(function () { return st.settings; });
+  var audio = new window.MorseAudio(function () { return ui.override || st.settings; });
 
   var ui = {
     tab: 'today',
@@ -16,10 +16,14 @@
     voice: { running: false, mode: 'quiz', last: null, message: '' },
     settingsView: 'main',
     rec: null,
-    cal: null
+    cal: null,
+    check: null,
+    checkResult: null,
+    override: null
   };
   var VP = window.VoiceParse, V = window.Voice, C = window.Clips;
-  var STU = window.Study, WD = window.Words, TR = window.Tracks;
+  var STU = window.Study, WD = window.Words, TR = window.Tracks, CK = window.Checks, CO = window.Coach;
+  function wordOpts() { return { ham: st.settings.hamPack, prosigns: st.settings.prosigns }; }
   var timers = [];
   var view = document.getElementById('view');
   var live = document.getElementById('live');
@@ -140,6 +144,7 @@
   });
 
   function go(tab) {
+    abortCheck();
     clearTimers();
     releaseKey();
     stopVoice();
@@ -166,6 +171,7 @@
     });
     subtabs.hidden = GROUP[ui.tab] !== 'practice';
     renderSessionBar();
+    if (ui.check && ui.check.state === 'intro') return renderCheckIntro();
     ({ today: renderToday, learn: renderLearn, listen: renderListen, words: renderWords, send: renderSend, voice: renderVoice,
       progress: renderProgress, settings: renderSettings })[ui.tab]();
   }
@@ -182,7 +188,7 @@
     var goal = st.settings.goalMin;
     var p = STU.plan(st);
     var haveLearned = learnedLetters().length > 0;
-    var wordsOk = WD.matching(T.unlocked(st), st.customWords).length >= WD.MIN_WORDS;
+    var wordsOk = WD.matching(T.unlocked(st), st.customWords, wordOpts()).length >= WD.MIN_WORDS;
     var mins = {};
     BLOCKS.forEach(function (b) { mins[b[0]] = Math.max(1, Math.round(goal * b[1])); });
     var info = {
@@ -212,6 +218,9 @@
     var goal = st.settings.goalMin, mins = T.minutesOn(st), week = T.minutesLastDays(st, 7);
     var counts = T.countByStatus(st);
     var plan = buildPlan();
+    var notes = CO.notes(st, T.today()).map(function (n) {
+      return '<li>' + n.text + (n.action ? ' <button class="btn small" data-act="' + n.action + '">' + (n.action === 'learn' ? 'Study' : 'Open Progress') + '</button>' : '') + '</li>';
+    }).join('');
     var items = plan.map(function (b, i) {
       return '<li><div><strong>' + b.title + '</strong> <span class="hint">· ' + b.min + ' min</span><br><span class="hint">' + b.why +
         '</span></div><button class="btn" data-block="' + i + '">Start</button></li>';
@@ -221,10 +230,14 @@
       '<div class="meter wide" aria-hidden="true"><div style="width:' + Math.min(100, Math.round(mins / goal * 100)) + '%"></div></div>' +
       '<p class="readout">Level ' + st.level + ' of ' + M.KOCH_ORDER.length + ' · Solid ' + counts.Solid + ' · Learned ' + counts.Learned +
       ' · Learning ' + counts.Learning + ' · New ' + counts.New + '</p>' +
+      (notes ? '<ul class="coach" aria-label="Coaching notes">' + notes + '</ul>' : '') +
       '<button class="btn primary big-btn" id="startplan">Start today’s plan</button>' +
       '<ol class="plan">' + items + '</ol>' +
       '<p class="hint">A new letter is always studied before it is ever quizzed. Short, regular sessions beat one long one: if you only have a few minutes, do the first block.</p></section>';
     document.getElementById('startplan').addEventListener('click', function () { startPlan(plan, 0); });
+    Array.prototype.forEach.call(view.querySelectorAll('[data-act]'), function (b) {
+      b.addEventListener('click', function () { go(b.getAttribute('data-act')); });
+    });
     Array.prototype.forEach.call(view.querySelectorAll('[data-block]'), function (b) {
       b.addEventListener('click', function () { startPlan(plan, Number(b.getAttribute('data-block'))); });
     });
@@ -292,8 +305,9 @@
   /* ---------- listen: the quiz ---------- */
   function readout() {
     var s = st.settings;
+    var cond = s.conditions && s.conditions !== 'clean' ? ' · sound: ' + M.CONDITIONS[s.conditions].label : '';
     return '<p class="readout">Level ' + st.level + ' of ' + M.KOCH_ORDER.length + ' · ' + s.charWpm + '/' + s.effWpm +
-      ' WPM · block ' + st.block.length + '/' + T.BLOCK + '</p>';
+      ' WPM · block ' + st.block.length + '/' + T.BLOCK + cond + '</p>';
   }
 
   var FOCUS_LABEL = { review: 'Focus: letters you have already learned', weak: 'Focus: your weak spots' };
@@ -317,7 +331,7 @@
       }
     } else if (L.phase === 'prompt') {
       var keys = T.unlocked(st).map(function (c) { return '<button type="button" data-ch="' + c + '" aria-label="' + c + '">' + c + '</button>'; }).join('');
-      view.innerHTML = '<section class="card center">' + readout() +
+      view.innerHTML = '<section class="card center">' + (ui.check ? '<p class="label">' + checkLabel() + '</p>' : readout()) +
         '<h2>Which character?</h2><p class="hint">Type it or tap it.</p>' +
         '<div class="row"><button class="btn primary" id="replay">Replay</button></div>' +
         '<div class="pad" id="pad">' + keys + '</div></section>';
@@ -381,7 +395,8 @@
 
   function nextListen() {
     var L = ui.listen;
-    L.ch = T.pick(st, 'listen', Math.random, L.last, listenOpts());
+    if (checkRunning(['letters'])) L.ch = ui.check.items[ui.check.i].text;
+    else L.ch = T.pick(st, 'listen', Math.random, L.last, listenOpts());
     L.last = L.ch;
     L.phase = 'prompt';
     render();
@@ -391,6 +406,11 @@
   function answerListen(letter) {
     var L = ui.listen;
     if (L.phase !== 'prompt') return;
+    if (checkRunning(['letters'])) {             // a check: no feedback, no effect on mastery
+      L.phase = 'checkwait';
+      checkAdvance({ target: L.ch, answer: letter, ok: letter === L.ch, ms: Math.max(0, performance.now() - L.endAt) });
+      return;
+    }
     var ok = letter === L.ch;
     var ms = Math.max(0, performance.now() - L.endAt);
     var before = T.charStatus(st, L.ch).status;
@@ -411,7 +431,7 @@
   }
 
   /* ---------- send (keying practice) ---------- */
-  function sendUnit() { return 1.2 / st.settings.sendWpm; }
+  function sendUnit() { return 1.2 / (checkRunning(['send']) ? CK.DEFS.send.unitWpm : st.settings.sendWpm); }
 
   function renderSend() {
     var S = ui.send;
@@ -422,8 +442,8 @@
         '<button class="btn primary" id="start">Start</button></section>';
       document.getElementById('start').addEventListener('click', startSend);
     } else if (S.phase === 'prompt') {
-      var echo = st.settings.echo;
-      view.innerHTML = '<section class="card center"><p class="label">' + (echo ? 'Listen, then send it back' : 'Send this character') + '</p>' +
+      var echo = st.settings.echo && !ui.check;
+      view.innerHTML = '<section class="card center"><p class="label">' + (ui.check ? checkLabel() : echo ? 'Listen, then send it back' : 'Send this character') + '</p>' +
         '<div class="big" aria-label="' + (echo ? 'hidden' : S.ch) + '">' + (echo ? '?' : S.ch) + '</div>' +
         '<div class="row"><button class="btn" id="hear">Hear it</button></div>' +
         '<div class="key" id="key" role="button" tabindex="0" aria-label="Morse key. Hold to sound the tone.">Hold to send · or space bar</div></section>';
@@ -456,7 +476,7 @@
   function nextSend() {
     clearTimers();
     var S = ui.send;
-    S.ch = T.pick(st, 'send', Math.random, S.last);
+    S.ch = checkRunning(['send']) ? ui.check.items[ui.check.i].text : T.pick(st, 'send', Math.random, S.last);
     S.last = S.ch;
     S.pattern = '';
     S.down = 0;
@@ -495,6 +515,11 @@
   function finishSend() {
     var S = ui.send;
     if (S.phase !== 'prompt' || !S.pattern) return;
+    if (checkRunning(['send'])) {
+      S.phase = 'checkwait';
+      checkAdvance({ target: S.ch, answer: M.decode(S.pattern) || S.pattern, ok: S.pattern === M.TABLE[S.ch] });
+      return;
+    }
     S.ok = S.pattern === M.TABLE[S.ch];
     T.record(st, 'send', S.ch, S.ok);
     save();
@@ -521,7 +546,7 @@
       var s = steps[i];
       if (hooks && hooks.step) hooks.step(s, i, steps.length);
       if (s.t === 'pause') await wait(s.s * 1000, token);
-      else if (s.t === 'tone') { var d = audio.playChar(s.ch); await wait((d + 0.15) * 1000, token); }
+      else if (s.t === 'tone') { var d = audio.playChar(s.ch, undefined, true); await wait((d + 0.15) * 1000, token); }
       else await talk(charParts(s.ch, ''));
     }
   }
@@ -611,7 +636,7 @@
   /* ---------- words (head copy) ---------- */
   function renderWords() {
     var Wd = ui.words, allowed = T.unlocked(st);
-    var n = WD.matching(allowed, st.customWords).length;
+    var n = WD.matching(allowed, st.customWords, wordOpts()).length;
     if (Wd.phase === 'idle') {
       var custom = st.customWords.map(function (w, i) {
         return '<span class="chip" style="width:auto;padding:0 8px">' + w + ' <button type="button" class="x" data-rm="' + i + '" aria-label="Remove ' + w + '">×</button></span>';
@@ -620,11 +645,17 @@
         '<p>Listen to the <strong>whole word</strong>, then type it. This trains you to hold a few letters in your head, which is how real copying works.</p>' +
         '<p class="readout">' + (n >= WD.MIN_WORDS ? n + ' words use only your unlocked letters' : 'Not enough words yet: you will copy short groups of letters') +
         ' · last 20: ' + pct(T.accuracy(st.words.recent)) + '</p>' +
+        '<div class="choice">' +
+        '<label><input type="checkbox" id="hamPack"' + (st.settings.hamPack ? ' checked' : '') + '><span>Include ham abbreviations and Q-codes (CQ, QTH, 73, …)</span></label>' +
+        '<label><input type="checkbox" id="prosigns"' + (st.settings.prosigns ? ' checked' : '') + '><span>Include prosigns (AR, SK, BT, KN, AS). Each is one run-together sound with no gap between its letters.</span></label></div>' +
         '<button class="btn primary big-btn" id="wstart">Start</button>' +
         '<h3>Your own words</h3><p class="hint">Add names or words that matter to you. They are used once all their letters are unlocked.</p>' +
         '<form id="wform" class="row"><input id="wnew" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="12" aria-label="A word to add" placeholder="e.g. a name">' +
         '<button class="btn" type="submit">Add</button></form><div class="ladder" style="justify-content:center">' + custom + '</div></section>';
       document.getElementById('wstart').addEventListener('click', startWords);
+      ['hamPack', 'prosigns'].forEach(function (k) {
+        document.getElementById(k).addEventListener('change', function (e) { st.settings[k] = e.target.checked; save(); renderWords(); });
+      });
       document.getElementById('wform').addEventListener('submit', function (e) {
         e.preventDefault();
         var w = WD.clean(document.getElementById('wnew').value);
@@ -635,7 +666,8 @@
         b.addEventListener('click', function () { st.customWords.splice(Number(b.getAttribute('data-rm')), 1); save(); renderWords(); });
       });
     } else if (Wd.phase === 'prompt') {
-      view.innerHTML = '<section class="card center"><p class="label">' + (Wd.item.kind === 'word' ? 'Copy the whole word' : 'Copy the letters') + '</p>' +
+      view.innerHTML = '<section class="card center"><p class="label">' + (ui.check ? checkLabel() : Wd.item.kind === 'word' ? 'Copy the whole word' :
+        Wd.item.kind === 'prosign' ? 'Prosign: one run-together sound. Type its two letters.' : 'Copy the letters') + '</p>' +
         '<h2>Listen, then type what you heard</h2>' +
         '<div class="row"><button class="btn primary" id="wreplay">Replay</button></div>' +
         '<form id="wanswer" class="row"><input id="wtext" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Your answer">' +
@@ -668,22 +700,31 @@
   function nextWord() {
     clearTimers();
     var Wd = ui.words;
-    Wd.item = WD.next(T.unlocked(st), Math.random, Wd.last, st.customWords);
+    if (checkRunning(['words', 'text'])) Wd.item = { text: ui.check.items[ui.check.i].text, kind: ui.check.kind === 'text' ? 'text' : 'word' };
+    else Wd.item = WD.next(T.unlocked(st), Math.random, Wd.last, st.customWords, wordOpts());
     Wd.last = Wd.item.text;
     Wd.phase = 'prompt';
     render();
     later(playWord, 400);
   }
 
-  function playWord() { audio.playText(ui.words.item.text); }
+  function playWord() {
+    var it = ui.words.item;
+    if (it.kind === 'prosign') audio.playProsign(it.text); else audio.playText(it.text);
+  }
 
   function answerWord(text) {
     var Wd = ui.words;
     if (Wd.phase !== 'prompt') return;
     var cmp = WD.compare(Wd.item.text, text);
     if (!cmp.answer) return;                       // nothing typed yet
+    if (checkRunning(['words', 'text'])) {
+      Wd.phase = 'checkwait';
+      checkAdvance({ target: Wd.item.text, answer: text, ok: cmp.ok });
+      return;
+    }
     Wd.cmp = cmp;
-    T.recordWord(st, cmp.target, cmp.answer);
+    T.recordWord(st, cmp.target, cmp.answer, undefined, Wd.item.kind === 'prosign');
     save();
     Wd.phase = 'reveal';
     render();
@@ -809,7 +850,7 @@
 
   function sayCh(c) { return VP.say(c, st.settings.phonetic); }
   function playAndWait(ch, token) {
-    var dur = audio.playChar(ch);
+    var dur = audio.playChar(ch, undefined, true);
     return wait((dur + 0.35) * 1000, token);
   }
 
@@ -923,11 +964,77 @@
     if (ui.voice.stoppedByVoice) await talk('Stopped.');
   }
 
-  /* ---------- progress ---------- */
-  var STATUS_NOTE = { New: 'not met yet', Learning: 'practising', Learned: 'meets the criteria', Solid: 'held up after two weeks' };
+  /* ---------- weekly checks ---------- */
+  var CHECK_TAB = { letters: 'listen', words: 'words', text: 'words', send: 'send' };
 
+  function abortCheck() { ui.check = null; ui.override = null; }
+
+  function startCheck(kind) {
+    var def = CK.DEFS[kind];
+    if (!CK.available(kind, st).ok) return;
+    go(CHECK_TAB[kind]);                       // go() also clears any check that was running
+    audio.unlock();
+    keepAwake();
+    ui.override = Object.assign({}, st.settings, { charWpm: def.c || st.settings.charWpm, effWpm: def.s || st.settings.effWpm,
+      conditions: def.cond, echo: false });
+    ui.check = { kind: kind, state: 'intro', i: 0, items: CK.items(kind, st), results: [] };
+    ui.checkResult = null;
+    render();
+  }
+
+  function renderCheckIntro() {
+    var ck = ui.check, def = CK.DEFS[ck.kind];
+    view.innerHTML = '<section class="card center"><p class="label">Weekly check</p><h2>' + def.title + '</h2><p>' + def.what + '</p>' +
+      '<p class="hint">About ' + def.minutes + ' minutes. Pass mark ' + Math.round(CK.PASS * 100) + '%. You can replay a sound, but nothing is marked until the end, and a check never changes which letters you have unlocked.</p>' +
+      '<div class="row"><button class="btn primary" id="ckstart">Start the check</button><button class="btn" id="ckcancel">Not now</button></div></section>';
+    document.getElementById('ckstart').addEventListener('click', function () { ck.state = 'run'; runCheckItem(); });
+    document.getElementById('ckcancel').addEventListener('click', function () { abortCheck(); go('progress'); });
+  }
+
+  function checkLabel() { var ck = ui.check; return CK.DEFS[ck.kind].title + ' · ' + (ck.i + 1) + ' of ' + ck.items.length; }
+  function checkRunning(kinds) { return ui.check && ui.check.state === 'run' && kinds.indexOf(ui.check.kind) >= 0; }
+
+  function runCheckItem() {
+    var k = ui.check.kind;
+    if (k === 'letters') nextListen(); else if (k === 'send') nextSend(); else nextWord();
+  }
+
+  function checkAdvance(result) {
+    var ck = ui.check;
+    ck.results.push(result);
+    ck.i++;
+    if (ck.i >= ck.items.length) return finishCheck();
+    later(runCheckItem, 350);
+  }
+
+  function finishCheck() {
+    var ck = ui.check, today = T.today();
+    var before = CK.levels(st, today).map(function (x) { return x.ok; });
+    var res = CK.score(ck.kind, ck.results);
+    CK.record(st, ck.kind, res, today, CK.DEFS[ck.kind].cond);
+    save();
+    var reached = CK.levels(st, today).filter(function (x, i) { return x.ok && !before[i]; }).map(function (x) { return x.n + ': ' + x.title; });
+    ui.checkResult = { kind: ck.kind, res: res, results: ck.results, reached: reached };
+    abortCheck();
+    go('progress');
+  }
+
+  function resultSummary(kind, r) {
+    var pc = Math.round(r.score * 100) + '%';
+    if (kind === 'letters') return r.correct + ' of ' + r.n + ' right (' + pc + ')' + (r.medianMs == null ? '' : ', typical answer ' + (r.medianMs / 1000).toFixed(1) + ' s after the sound');
+    if (kind === 'words') return r.correct + ' of ' + r.n + ' words exactly right (' + pc + '); ' + Math.round(r.charAcc * 100) + '% of letters';
+    if (kind === 'text') return Math.round(r.charAcc * 100) + '% of characters copied right over ' + r.n + ' phrases';
+    return r.correct + ' of ' + r.n + ' characters keyed exactly right (' + pc + ')';
+  }
+
+  function ago(date) {
+    var d = T.daysBetween(date, T.today());
+    return d === 0 ? 'today' : d === 1 ? 'yesterday' : d + ' days ago';
+  }
+
+  /* ---------- progress ---------- */
   function renderProgress() {
-    var s = st.settings;
+    var s = st.settings, today = T.today();
     var counts = T.countByStatus(st);
     var rows = T.unlocked(st).map(function (c) {
       var x = T.charStatus(st, c);
@@ -943,12 +1050,32 @@
       var label = c + ', ' + (state === 'locked' ? 'not yet unlocked' : state === 'current' ? 'newest character' : 'unlocked');
       return '<span class="chip ' + state + '" aria-label="' + label + '">' + c + '</span>';
     }).join('');
-    var allLearned = M.KOCH_ORDER.filter(function (c) { var q = T.charStatus(st, c).status; return q === 'Learned' || q === 'Solid'; }).length;
-    var wAcc = T.accuracy(st.words.recent);
-    var lvl1 = allLearned === M.KOCH_ORDER.length && s.effWpm >= 12;
-    var lvl2 = st.words.recent.length >= T.WINDOW && wAcc >= 0.95 && s.effWpm >= 15;
-    function tick(ok) { return ok ? '✓ ' : '○ '; }
-    view.innerHTML = '<section class="card"><h2>Progress</h2>' +
+
+    var result = '';
+    var cr = ui.checkResult;
+    if (cr) {
+      var wrong = cr.results.filter(function (r) { return !r.ok; }).slice(0, 8)
+        .map(function (r) { return '<li>' + r.target + ' → ' + (r.answer || 'nothing') + '</li>'; }).join('');
+      result = '<section class="card" role="status"><p class="label">' + CK.DEFS[cr.kind].title + ' result</p>' +
+        '<span class="status ' + (cr.res.pass ? 'correct' : 'wrong') + '">' + (cr.res.pass ? '✓ Passed' : '✕ Not yet') + '</span>' +
+        '<p>' + resultSummary(cr.kind, cr.res) + '. Pass mark ' + Math.round(CK.PASS * 100) + '%.</p>' +
+        (cr.reached.length ? '<p><strong>You reached level ' + cr.reached.join(', ') + '.</strong></p>' : '') +
+        (wrong ? '<p class="label">Mistakes (what it was → what you gave)</p><ul class="needs">' + wrong + '</ul>' : '') +
+        '<div class="row"><button class="btn primary" id="ckdone">Done</button></div></section>';
+    }
+
+    var checks = Object.keys(CK.DEFS).map(function (k) {
+      var def = CK.DEFS[k], av = CK.available(k, st), last = CK.latest(st, k);
+      return '<li><div><strong>' + def.title + '</strong> <span class="hint">· about ' + def.minutes + ' min</span><br><span class="hint">' +
+        (av.ok ? (last ? 'Last: ' + Math.round(last.score * 100) + '% ' + (last.pass ? 'passed' : 'not passed') + ', ' + ago(last.date) : 'Not taken yet') : av.why) +
+        '</span></div><button class="btn small" data-check="' + k + '"' + (av.ok ? '' : ' disabled') + '>Start</button></li>';
+    }).join('');
+
+    var lv = CK.levels(st, today).map(function (x) {
+      return '<li>' + (x.ok ? '✓ ' : '○ ') + '<strong>' + x.n + '. ' + x.title + ':</strong> ' + x.detail + (x.ok || !x.need.length ? '' : '<br><span class="hint">Still needed: ' + x.need.join('; ') + '</span>') + '</li>';
+    }).join('');
+
+    view.innerHTML = result + '<section class="card"><h2>Progress</h2>' +
       '<p class="readout">Solid ' + counts.Solid + ' · Learned ' + counts.Learned + ' · Learning ' + counts.Learning + ' · New ' + counts.New +
       ' (of ' + st.level + ' unlocked)</p>' +
       '<p class="label">Koch order</p><div class="ladder">' + chips + '</div>' +
@@ -958,19 +1085,27 @@
       (needs ? '<p class="label">What each shaky letter still needs</p><ul class="needs">' + needs + '</ul>' : '') +
       '<p class="label">Letters you mix up</p><p>' + (pairs || 'No pattern yet.') + '</p>' +
       (pairs ? '<div class="row"><button class="btn" id="drill">Drill my weak spots</button></div>' : '') +
-      '<p class="label">Your levels</p><ul class="needs">' +
-      '<li>' + tick(lvl1) + '<strong>1. Foundation:</strong> all 40 characters learned, at 12 WPM effective or faster (' + allLearned + ' of 40 learned; now ' + s.effWpm + ' WPM)</li>' +
-      '<li>' + tick(lvl2) + '<strong>2. Fluent:</strong> whole words at 15 WPM effective, 95% right over the last 20 (words: ' + pct(wAcc) + '; now ' + s.effWpm + ' WPM)</li>' +
-      '<li>○ <strong>3. Proficient:</strong> 20 WPM plain text with noise, and sending at 15 WPM (practice for this comes in a later update)</li>' +
-      '<li>○ <strong>4. Teacher:</strong> run a short lesson with your children (family profiles come in a later update)</li></ul>' +
       '<dl class="stats">' +
       '<dt>Listening accuracy (last 50)</dt><dd>' + pct(T.accuracy(st.recent.listen)) + '</dd>' +
       '<dt>Sending accuracy (last 50)</dt><dd>' + pct(T.accuracy(st.recent.send)) + '</dd>' +
       '<dt>Speed (character / effective)</dt><dd>' + s.charWpm + ' / ' + s.effWpm + ' WPM</dd>' +
       '<dt>Practised today / 7 days</dt><dd>' + Math.floor(T.minutesOn(st)) + ' / ' + Math.round(T.minutesLastDays(st, 7)) + ' min</dd></dl>' +
-      '<p class="hint">The next letter unlocks when a block of 50 answers is 90% right. Below 70% the newest one steps back.</p></section>';
+      '<p class="hint">The next letter unlocks when a block of 50 answers is 90% right. Below 70% the newest one steps back.</p></section>' +
+
+      '<section class="card"><h2>Weekly check</h2>' +
+      '<p>Short tests with no feedback until the end. They decide your levels, so they measure what you can really do. About once a week is right; do one or all four.</p>' +
+      '<ol class="plan">' + checks + '</ol></section>' +
+
+      '<section class="card"><h2>Your levels</h2><ul class="needs">' + lv + '</ul>' +
+      '<p class="hint">Levels 2 and 3 count a passed check for ' + CK.VALID_DAYS + ' days.</p></section>';
+
     var d = document.getElementById('drill');
     if (d) d.addEventListener('click', function () { ui.listen.focus = 'weak'; go('listen'); startListen(); });
+    var done = document.getElementById('ckdone');
+    if (done) done.addEventListener('click', function () { ui.checkResult = null; render(); });
+    Array.prototype.forEach.call(view.querySelectorAll('[data-check]'), function (b) {
+      b.addEventListener('click', function () { startCheck(b.getAttribute('data-check')); });
+    });
   }
 
   /* ---------- settings ---------- */
@@ -1061,6 +1196,13 @@
       '<div class="row"><button type="button" class="btn" id="test">Play test tone</button>' +
       '<button type="button" class="btn danger" id="reset">Reset progress</button></div></form></section>' +
 
+      '<section class="card"><h2>Practice conditions</h2><form class="settings" onsubmit="return false">' +
+      '<p>Real signals are never a clean computer tone. Turn these on once the letters feel solid, to train your ear for noise, fading, a wandering pitch and an uneven hand. They apply to Listen, Words and the sound in Send. Learn, Voice and audio tracks always stay clean.</p>' +
+      '<div class="field"><label for="conditions">Sound</label><select id="conditions">' +
+      Object.keys(M.CONDITIONS).map(function (k) { return '<option value="' + k + '"' + (s.conditions === k ? ' selected' : '') + '>' + M.CONDITIONS[k].label + '</option>'; }).join('') +
+      '</select><output id="cond-note"></output></div>' +
+      '<div class="row"><button type="button" class="btn" id="condtest">Hear an example</button></div></form></section>' +
+
       '<section class="card"><h2>Voice</h2><form class="settings" onsubmit="return false">' +
       check('speak', 'Say “Correct” or “Not quite” out loud in Listen and Send', s.speak) +
       check('phonetic', 'Also say the phonetic word, like “K, Kilo”', s.phonetic) +
@@ -1111,6 +1253,12 @@
     bindRanges(['pitch', 'charWpm', 'effWpm', 'sendWpm', 'volume', 'goalMin', 'speechRate', 'speechPitch', 'speechVolume', 'thinkSec']);
     bindChecks(['auto', 'echo', 'speak', 'phonetic']);
     document.getElementById('test').addEventListener('click', function () { audio.unlock(); audio.playChar('K'); });
+    var COND_NOTE = { clean: 'A clean tone, nothing else.', light: 'A little noise and fading, a slightly human hand.',
+      real: 'Noticeable noise, fading, a wandering pitch and an uneven hand. Like a real band.', hard: 'Heavy noise and fading. For when Realistic feels easy.' };
+    function showCond() { document.getElementById('cond-note').textContent = COND_NOTE[st.settings.conditions]; }
+    showCond();
+    document.getElementById('conditions').addEventListener('change', function (e) { st.settings.conditions = e.target.value; save(); showCond(); });
+    document.getElementById('condtest').addEventListener('click', function () { audio.unlock(); audio.playText('CQ TEST'); });
     document.getElementById('reset').addEventListener('click', function () {
       if (window.confirm('Reset all progress and settings? Your recordings are kept.')) {
         st = T.defaults();
