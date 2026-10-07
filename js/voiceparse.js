@@ -65,16 +65,20 @@
       .trim();
   }
 
-  /** Characters one transcript could mean: a NATO word wins, otherwise the last recognised word. */
-  function candidates(text) {
+  /**
+   * Characters one transcript could mean. A learned word (aliases) or a NATO word wins,
+   * otherwise the last recognised word.
+   */
+  function candidates(text, aliases) {
     var tokens = normalise(text).split(' ').filter(Boolean);
-    var nato = null, last = null;
+    var strong = null, last = null;
     tokens.forEach(function (t) {
-      if (NATO_WORDS[t]) nato = [NATO_WORDS[t]];
+      if (aliases && aliases[t]) strong = [aliases[t]];
+      else if (NATO_WORDS[t]) strong = [NATO_WORDS[t]];
       var list = WORDS[t] || (/^[0-9]$/.test(t) ? [t] : null);
       if (list) last = list;
     });
-    return nato || last || [];
+    return strong || last || [];
   }
 
   /**
@@ -82,15 +86,16 @@
    * Returns {type:'char', ch} | {type:'stop'|'skip'|'repeat'} | null.
    * An allowed character beats a more likely one that is not on the pad.
    */
-  function parse(alternatives, allowed) {
+  function parse(alternatives, allowed, aliases) {
     var alts = (alternatives || []).filter(function (a) { return a && a.trim(); });
     var fallback = null;
     for (var i = 0; i < alts.length; i++) {
       var norm = normalise(alts[i]);
+      if (aliases && aliases[norm]) return { type: 'char', ch: aliases[norm] }; // exactly what this learner is known to say
       for (var c = 0; c < COMMANDS.length; c++) {
         if (COMMANDS[c][1].test(norm)) return { type: COMMANDS[c][0] };
       }
-      var cands = candidates(alts[i]);
+      var cands = candidates(alts[i], aliases);
       for (var j = 0; j < cands.length; j++) {
         if (!allowed || allowed.indexOf(cands[j]) >= 0) return { type: 'char', ch: cands[j] };
       }
@@ -99,5 +104,20 @@
     return fallback;
   }
 
-  return { say: say, parse: parse, normalise: normalise, NATO: NATO };
+  /**
+   * Remember that this learner's `heard` means `target`. Returns 'added', 'known' (already understood),
+   * 'conflict' (that phrase already means another character) or 'invalid' (empty, too long, or a command word).
+   */
+  function learn(aliases, heard, target, allowed) {
+    var key = normalise(heard);
+    if (!key || key.split(' ').length > 3 || key.length > 24) return 'invalid';
+    var cur = parse([heard], allowed, aliases);
+    if (cur && cur.type !== 'char') return 'invalid';
+    if (cur && cur.ch === target) return 'known';
+    if (aliases[key] && aliases[key] !== target) return 'conflict';
+    aliases[key] = target;
+    return 'added';
+  }
+
+  return { say: say, parse: parse, learn: learn, normalise: normalise, NATO: NATO };
 });

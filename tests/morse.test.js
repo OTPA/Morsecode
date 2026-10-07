@@ -127,3 +127,31 @@ test('save and load round-trip, survive corrupt and missing storage', () => {
   assert.equal(Trainer.load(storage).level, 2);
   assert.equal(Trainer.load(null).level, 2);
 });
+
+test('per-character stats, weights, learned words and block survive a save and load', () => {
+  const mem = {}; const storage = { getItem: (k) => mem[k] ?? null, setItem: (k, v) => { mem[k] = v; } };
+  const st = fresh();
+  Trainer.record(st, 'listen', 'K', false);
+  Trainer.record(st, 'listen', 'M', true);
+  Trainer.record(st, 'send', 'K', true);
+  st.aliases.cake = 'K';
+  Trainer.save(storage, st);
+  const back = Trainer.load(storage);
+  assert.deepEqual(back.chars.listen.K, { n: 1, ok: 0 });
+  assert.equal(back.chars.send.K.n, 1);
+  assert.equal(back.weights.listen.K, 2);
+  assert.equal(back.aliases.cake, 'K');
+  assert.deepEqual(back.block, [false, true]);
+  assert.equal(back.recent.listen.length, 2);
+});
+
+test('saved data from before new settings existed still loads with defaults filled in', () => {
+  const storage = { getItem: () => JSON.stringify({ level: 5, settings: { pitch: 700 } }), setItem() {} };
+  const st = Trainer.load(storage);
+  assert.equal(st.level, 5);
+  assert.equal(st.settings.pitch, 700);
+  assert.equal(st.settings.speechPitch, 1);
+  assert.equal(st.settings.recogLang, 'en-US');
+  assert.equal(st.settings.ownVoice, false);
+  assert.deepEqual(st.aliases, {});
+});

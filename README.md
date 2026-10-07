@@ -27,6 +27,18 @@ One installable web app (PWA): works on an Android phone and on a laptop, offlin
    - *Just listen*: sound, a pause to think, the letter spoken, the sound again. No answers needed.
    - Spoken verdicts also work in Listen and Send (Settings: "Say Correct or Not quite out loud").
 
+   Voice settings (Settings → Voice):
+   - **Voice**: pick any voice installed on the device (English first; tick "all languages" for the rest), plus voice
+     speed, pitch and volume, and the accent the app expects when you answer by voice (US, UK, Australian, Indian, ...).
+     On Android, more and better voices come from Settings → Languages → Text-to-speech.
+   - **Voice calibration**: say each unlocked letter, then its phonetic word. The app remembers any way the recogniser
+     mishears you ("cake" for K) and counts it as correct from then on. After a wrong answer in the voice quiz, a button
+     teaches it one more word. Stored on the device; can be cleared.
+   - **My own voice**: record yourself saying "Correct", "Not quite", "It was" and each letter, digit and punctuation
+     name (43 essentials, 26 optional phonetic words). The recorder stops by itself when you pause, trims silence and
+     levels the clip. With "Use my own voice" on, spoken feedback plays your clips; anything not recorded falls back to
+     the chosen voice. Clips live in this browser (IndexedDB); use *Save a backup* / *Restore a backup* to keep or move them.
+
    Limits: voice answers need Chrome (Android or laptop) and an internet connection, because Chrome sends your voice to
    its speech service. Browsers pause the microphone when the screen turns off or you switch apps, so the session stops
    (with a message) instead of failing silently. Use hands-free only where it is safe and legal.
@@ -62,6 +74,8 @@ js/trainer.js          level, weighted picking, 50-character blocks, storage (pu
 js/audio.js            Web Audio: scheduled characters, live side tone
 js/voiceparse.js       what you said -> character or command; what to say back (pure)
 js/voice.js            browser speech synthesis and recognition
+js/audioedit.js        trim, level, resample and WAV-encode a recorded clip (pure)
+js/clips.js            record, store (IndexedDB), play, back up and restore your own clips
 js/app.js              screens and input
 tests/*.test.js
 icons/

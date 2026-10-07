@@ -16,17 +16,20 @@
       weights: { listen: {}, send: {} },
       chars: { listen: {}, send: {} },   // per-character {n, ok}
       recent: { listen: [], send: [] },  // last 50 results per mode
+      aliases: {},           // how recognition hears this learner: heard phrase -> character
       settings: { pitch: 650, charWpm: 20, effWpm: 10, auto: true, sendWpm: 10, echo: false, volume: 0.6,
-        speak: true, phonetic: true, speechRate: 1, thinkSec: 3, voiceMode: 'quiz' }
+        speak: true, phonetic: true, speechRate: 1, thinkSec: 3, voiceMode: 'quiz',
+        voiceURI: '', speechPitch: 1, speechVolume: 1, recogLang: 'en-US', ownVoice: false }
     };
   }
 
+  function isObject(x) { return x && typeof x === 'object' && !Array.isArray(x); }
+
+  /** Defaults first, then everything saved on top (keys the defaults do not list, such as per-character stats, are kept). */
   function merge(base, saved) {
-    if (!saved || typeof saved !== 'object') return base;
-    Object.keys(base).forEach(function (k) {
-      if (saved[k] === undefined) return;
-      if (base[k] && typeof base[k] === 'object' && !Array.isArray(base[k])) base[k] = merge(base[k], saved[k]);
-      else base[k] = saved[k];
+    if (!isObject(saved)) return base;
+    Object.keys(saved).forEach(function (k) {
+      base[k] = isObject(base[k]) && isObject(saved[k]) ? merge(base[k], saved[k]) : saved[k];
     });
     return base;
   }

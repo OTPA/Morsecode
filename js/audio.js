@@ -27,6 +27,9 @@
     return true;
   };
 
+  /** The shared audio context (after unlock), for playing recorded clips. */
+  MorseAudio.prototype.context = function () { return this.unlock() ? this.ctx : null; };
+
   /** Play one character now (+delay). Returns its duration in seconds. */
   MorseAudio.prototype.playChar = function (ch, delay) {
     if (!this.unlock()) return 0;

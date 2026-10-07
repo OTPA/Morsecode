@@ -3,17 +3,41 @@
   var SR = root.SpeechRecognition || root.webkitSpeechRecognition;
   var current = null;
 
+  function voices() {
+    try { return (root.speechSynthesis && root.speechSynthesis.getVoices()) || []; } catch (e) { return []; }
+  }
+
   var Voice = {
     canSpeak: !!(root.speechSynthesis && root.SpeechSynthesisUtterance),
     canListen: !!SR,
 
-    /** Speak text, resolve when finished (or after a safety timeout: some Android builds never fire onend). */
-    speak: function (text, rate) {
+    /** Installed text-to-speech voices. The list can be empty until the browser has loaded it. */
+    voices: voices,
+
+    /** Call back when the browser finishes loading (or changes) its voice list. */
+    onVoicesChanged: function (cb) {
+      try { root.speechSynthesis.addEventListener('voiceschanged', cb); } catch (e) { /* not supported */ }
+    },
+
+    /**
+     * Speak text, resolve when finished (or after a safety timeout: some Android builds never fire onend).
+     * opts: {rate, pitch, volume, voiceURI}. A bare number is treated as the rate.
+     */
+    speak: function (text, opts) {
+      if (typeof opts === 'number') opts = { rate: opts };
+      opts = opts || {};
       return new Promise(function (resolve) {
         if (!Voice.canSpeak) return resolve();
         var u = new root.SpeechSynthesisUtterance(text);
-        u.lang = 'en-US';
-        u.rate = rate || 1;
+        var chosen = null;
+        if (opts.voiceURI) {
+          var all = voices();
+          for (var i = 0; i < all.length; i++) if (all[i].voiceURI === opts.voiceURI) chosen = all[i];
+        }
+        if (chosen) { u.voice = chosen; u.lang = chosen.lang; } else u.lang = 'en-US';
+        u.rate = opts.rate || 1;
+        u.pitch = opts.pitch || 1;
+        u.volume = opts.volume == null ? 1 : opts.volume;
         var done = false;
         var finish = function () {
           if (done) return;
@@ -28,12 +52,12 @@
       });
     },
 
-    /** Listen for one utterance. Resolves {alts: [transcripts]} or {alts: [], error}. */
-    listen: function (timeoutMs) {
+    /** Listen for one utterance in `lang`. Resolves {alts: [transcripts]} or {alts: [], error}. */
+    listen: function (timeoutMs, lang) {
       return new Promise(function (resolve) {
         if (!SR) return resolve({ alts: [], error: 'unsupported' });
         var r = new SR();
-        r.lang = 'en-US';
+        r.lang = lang || 'en-US';
         r.interimResults = false;
         r.continuous = false;
         r.maxAlternatives = 5;

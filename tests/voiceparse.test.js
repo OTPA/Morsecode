@@ -79,3 +79,34 @@ test('every Koch character can be spoken and understood back', () => {
     if (/[A-Z]/.test(c)) assert.equal(ch([VP.NATO[c]], Morse.KOCH_ORDER), c, c + ' via NATO');
   });
 });
+
+test('learned words override the built-in guess', () => {
+  const aliases = { cake: 'K', 'kay oh': 'K' };
+  assert.equal(VP.parse(['cake'], ALLOWED, aliases).ch, 'K');
+  assert.equal(VP.parse(['cake'], ALLOWED), null);
+  assert.equal(VP.parse(['Cake!'], ALLOWED, aliases).ch, 'K');
+  assert.equal(VP.parse(['kay oh'], ALLOWED, aliases).ch, 'K');
+  // a learned word wins over the built-in meaning of the same word
+  assert.equal(VP.parse(['to'], ['T', '2'], { to: 'T' }).ch, 'T');
+  assert.equal(VP.parse(['to'], ['T', '2']).ch, '2');
+  // and works inside a longer phrase
+  assert.equal(VP.parse(['it is cake'], ALLOWED, aliases).ch, 'K');
+});
+
+test('learn() only stores what is needed and refuses bad input', () => {
+  const al = {};
+  assert.equal(VP.learn(al, 'cake', 'K', ALLOWED), 'added');
+  assert.equal(al.cake, 'K');
+  assert.equal(VP.learn(al, 'kilo', 'K', ALLOWED), 'known');
+  assert.equal(VP.learn(al, 'kay', 'K', ALLOWED), 'known');
+  assert.equal(VP.learn(al, '', 'K', ALLOWED), 'invalid');
+  assert.equal(VP.learn(al, 'one two three four', 'K', ALLOWED), 'invalid');
+  assert.equal(VP.learn(al, 'stop', 'K', ALLOWED), 'invalid');
+  assert.equal(VP.learn(al, 'repeat', 'K', ALLOWED), 'invalid');
+});
+
+test('a phrase that already means another character is not silently reassigned', () => {
+  const al = { cake: 'K' };
+  assert.equal(VP.learn(al, 'cake', 'M', ALLOWED), 'conflict');
+  assert.equal(al.cake, 'K');
+});
